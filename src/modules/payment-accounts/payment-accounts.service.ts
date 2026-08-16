@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma.js';
-import { encryptAES, decryptAES } from '../../lib/encryption.js';
+import { encryptAES } from '../../lib/encryption.js';
 import { GoBizClient, type GoBizTokenInfo } from '../../providers/gobiz/gobiz.client.js';
 
 export interface ConnectWithOtpInput {
@@ -9,6 +9,7 @@ export interface ConnectWithOtpInput {
   accountName?: string;
   customMinAmount?: number;
   customMaxAmount?: number;
+  manualQrString?: string;
 }
 
 export interface ConnectWithPasswordInput {
@@ -17,6 +18,7 @@ export interface ConnectWithPasswordInput {
   accountName?: string;
   customMinAmount?: number;
   customMaxAmount?: number;
+  manualQrString?: string;
 }
 
 export class PaymentAccountService {
@@ -61,7 +63,7 @@ export class PaymentAccountService {
   }
 
   /**
-   * Step 2: Verify OTP and save connected GoBiz account
+   * Step 2: Verify OTP and save connected GoBiz account (with automatic QRIS extraction)
    */
   static async verifyOtpAndConnect(userId: string, input: ConnectWithOtpInput) {
     await this.verifyAccountLimit(userId);
@@ -72,11 +74,18 @@ export class PaymentAccountService {
     // 2. Fetch Merchant Profile from GoBiz
     const profile = await GoBizClient.getMerchantProfile(tokens.accessToken);
 
-    // 3. Save Connected Account
+    // 3. Automatically fetch static QRIS string from GoBiz Portal
+    let qrString = input.manualQrString || null;
+    if (!qrString) {
+      qrString = await GoBizClient.fetchQrisStringFromPortal(tokens.accessToken);
+    }
+
+    // 4. Save Connected Account
     return await this.saveConnectedAccount(userId, tokens, profile, {
       accountName: input.accountName || profile.outletName,
       customMinAmount: input.customMinAmount,
       customMaxAmount: input.customMaxAmount,
+      qrString: qrString || undefined,
     });
   }
 
@@ -89,15 +98,21 @@ export class PaymentAccountService {
     const tokens = await GoBizClient.loginWithPassword(input.email, input.password);
     const profile = await GoBizClient.getMerchantProfile(tokens.accessToken);
 
+    let qrString = input.manualQrString || null;
+    if (!qrString) {
+      qrString = await GoBizClient.fetchQrisStringFromPortal(tokens.accessToken);
+    }
+
     return await this.saveConnectedAccount(userId, tokens, profile, {
       accountName: input.accountName || profile.outletName,
       customMinAmount: input.customMinAmount,
       customMaxAmount: input.customMaxAmount,
+      qrString: qrString || undefined,
     });
   }
 
   /**
-   * Helper to persist PaymentAccount + GoBizAccount with AES-256-GCM encryption
+   * Helper to persist PaymentAccount + GoBizAccount with AES-256-GCM encryption & QRIS
    */
   private static async saveConnectedAccount(
     userId: string,
@@ -107,6 +122,7 @@ export class PaymentAccountService {
       accountName: string;
       customMinAmount?: number;
       customMaxAmount?: number;
+      qrString?: string;
     }
   ) {
     // Find GOBIZ provider
@@ -125,6 +141,11 @@ export class PaymentAccountService {
         refreshToken: tokens.refreshToken,
       })
     );
+
+    // Calculate token expiration timestamp if expiresIn is available
+    const credentialExpiresAt = tokens.expiresIn
+      ? new Date(Date.now() + tokens.expiresIn * 1000)
+      : null;
 
     // Create PaymentAccount and GoBizAccount in atomic transaction
     const paymentAccount = await prisma.$transaction(async (tx) => {
@@ -145,11 +166,14 @@ export class PaymentAccountService {
         data: {
           paymentAccountId: account.id,
           merchantId: profile.merchantId,
-          outletId: profile.merchantId, // GoBiz main outlet ID matches merchant ID
+          outletId: profile.merchantId, // GoBiz main outlet ID
           merchantName: profile.outletName,
           outletName: profile.outletName,
           loginIdentifier: profile.phone || '',
           credentialEncrypted,
+          credentialExpiresAt,
+          qrString: options.qrString || null,
+          qrUpdatedAt: options.qrString ? new Date() : null,
           lastConnectionCheckAt: new Date(),
         },
       });
@@ -166,6 +190,7 @@ export class PaymentAccountService {
       outletName: profile.outletName,
       customMinAmount: paymentAccount.customMinAmount,
       customMaxAmount: paymentAccount.customMaxAmount,
+      hasQrString: !!options.qrString,
       createdAt: paymentAccount.createdAt,
     };
   }
@@ -189,6 +214,9 @@ export class PaymentAccountService {
             outletId: true,
             merchantName: true,
             outletName: true,
+            qrString: true,
+            qrUpdatedAt: true,
+            credentialExpiresAt: true,
             lastConnectionCheckAt: true,
           },
         },
@@ -205,7 +233,18 @@ export class PaymentAccountService {
       customMinAmount: acc.customMinAmount,
       customMaxAmount: acc.customMaxAmount,
       lastSyncedAt: acc.lastSyncedAt,
-      goBiz: acc.goBizAccount,
+      goBiz: acc.goBizAccount
+        ? {
+            merchantId: acc.goBizAccount.merchantId,
+            outletId: acc.goBizAccount.outletId,
+            merchantName: acc.goBizAccount.merchantName,
+            outletName: acc.goBizAccount.outletName,
+            hasQrString: !!acc.goBizAccount.qrString,
+            qrUpdatedAt: acc.goBizAccount.qrUpdatedAt,
+            credentialExpiresAt: acc.goBizAccount.credentialExpiresAt,
+            lastConnectionCheckAt: acc.goBizAccount.lastConnectionCheckAt,
+          }
+        : null,
       createdAt: acc.createdAt,
     }));
   }

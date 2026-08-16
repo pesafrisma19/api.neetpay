@@ -28,6 +28,7 @@ export interface GoBizMerchantProfile {
 
 export class GoBizClient {
   private static readonly BASE_URL = 'https://api.gobiz.co.id';
+  private static readonly PORTAL_URL = 'https://portal.gofoodmerchant.co.id';
 
   private static getHeaders(uniqueId?: string): Record<string, string> {
     return {
@@ -269,5 +270,40 @@ export class GoBizClient {
       accountName: m.bank_account?.account_name,
       rawMerchant: m,
     };
+  }
+
+  /**
+   * Automatically fetch static QRIS string (aspi_qr_string) from GoBiz Merchant Portal
+   */
+  static async fetchQrisStringFromPortal(accessToken: string): Promise<string | null> {
+    try {
+      const response = await fetch(`${this.PORTAL_URL}/id/dashboard`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Cookie': `access_token=${accessToken}; selected_country=ID; language=id`,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const html = await response.text();
+
+      // Extract aspi_qr_string
+      const aspiMatch = html.match(/aspi_qr_string\\*"\s*:\s*\\*"([^\\"]+)/);
+      if (aspiMatch && aspiMatch[1]?.startsWith('00020101')) {
+        return aspiMatch[1];
+      }
+
+      // Fallback: search for EMVCo 00020101 pattern
+      const emvcoMatch = html.match(/(00020101[A-Za-z0-9\s\\,&_-]+?6304[A-Za-z0-9]{4})/);
+      if (emvcoMatch && emvcoMatch[1]) {
+        return emvcoMatch[1];
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
   }
 }

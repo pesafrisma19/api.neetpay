@@ -18,6 +18,7 @@ const verifyOtpSchema = z.object({
   accountName: z.string().optional(),
   customMinAmount: z.number().positive().optional(),
   customMaxAmount: z.number().positive().optional(),
+  manualQrString: z.string().min(20).optional(),
 });
 
 const connectPasswordSchema = z.object({
@@ -26,6 +27,7 @@ const connectPasswordSchema = z.object({
   accountName: z.string().optional(),
   customMinAmount: z.number().positive().optional(),
   customMaxAmount: z.number().positive().optional(),
+  manualQrString: z.string().min(20).optional(),
 });
 
 /**
