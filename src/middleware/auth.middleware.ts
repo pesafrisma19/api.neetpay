@@ -1,0 +1,100 @@
+import type { MiddlewareHandler } from 'hono';
+import { getCookie } from 'hono/cookie';
+import crypto from 'crypto';
+import { prisma } from '../lib/prisma.js';
+import { errorResponse } from '../lib/response.js';
+import type { AppEnv } from '../types/hono.js';
+
+export const SESSION_COOKIE_NAME = 'neetpay_session';
+
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+  // Extract token from cookie or Authorization header
+  let rawToken = getCookie(c, SESSION_COOKIE_NAME);
+
+  if (!rawToken) {
+    const authHeader = c.req.header('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      rawToken = authHeader.substring(7).trim();
+    }
+  }
+
+  if (!rawToken) {
+    return c.json(
+      errorResponse('UNAUTHORIZED', 'Authentication session required. Please log in.'),
+      401
+    );
+  }
+
+  const tokenHash = hashToken(rawToken);
+
+  const session = await prisma.authSession.findUnique({
+    where: { tokenHash },
+    include: {
+      user: {
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          role: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!session) {
+    return c.json(
+      errorResponse('UNAUTHORIZED', 'Invalid or expired session. Please log in again.'),
+      401
+    );
+  }
+
+  if (session.expiresAt < new Date()) {
+    // Delete expired session asynchronously
+    prisma.authSession.delete({ where: { id: session.id } }).catch(() => {});
+    return c.json(
+      errorResponse('SESSION_EXPIRED', 'Session has expired. Please log in again.'),
+      401
+    );
+  }
+
+  if (session.user.status !== 'ACTIVE') {
+    return c.json(
+      errorResponse('ACCOUNT_INACTIVE', 'User account is suspended or pending verification.'),
+      403
+    );
+  }
+
+  // Update lastUsedAt in background without blocking
+  prisma.authSession
+    .update({
+      where: { id: session.id },
+      data: { lastUsedAt: new Date() },
+    })
+    .catch(() => {});
+
+  // Attach to Hono context
+  c.set('user', session.user);
+  c.set('session', session);
+
+  await next();
+};
+
+export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const user = c.get('user');
+
+  if (!user || user.role !== 'ADMIN') {
+    return c.json(
+      errorResponse('FORBIDDEN', 'Access denied. Administrator privileges required.'),
+      403
+    );
+  }
+
+  await next();
+};

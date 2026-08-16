@@ -1,0 +1,458 @@
+// NeetPay V1 - Core Prisma Database Schema
+// Non-Custodial Payment Gateway Architecture
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// ENUMS
+// -----------------------------------------------------------------------------
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentMethodType {
+  QRIS
+  VIRTUAL_ACCOUNT
+  EWALLET
+  RETAIL
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  ERROR
+  NEEDS_REAUTH
+}
+
+enum FeeType {
+  NONE
+  FLAT
+  PERCENT
+}
+
+enum TransactionStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+  CANCELLED
+}
+
+enum TransactionEventType {
+  TRANSACTION_CREATED
+  QR_GENERATED
+  PAYMENT_DETECTED
+  STATUS_CHANGED
+  WEBHOOK_QUEUED
+  EXPIRED
+  CANCELLED
+}
+
+enum WebhookStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+// -----------------------------------------------------------------------------
+// 1. AUTHENTICATION & USERS (Non-Custodial: No Balance / No Saldo)
+// -----------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  role         Role       @default(USER)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  // Relationships
+  sessions          AuthSession[]
+  apiCredential     ApiCredential?
+  webhookConfigs    WebhookConfig[]
+  subscriptions     Subscription[]
+  monthlyUsages     MonthlyUsage[]
+  paymentAccounts   PaymentAccount[]
+  paymentFeeRules   PaymentFeeRule[]
+  transactions      Transaction[]
+  webhookDeliveries WebhookDelivery[]
+
+  @@map("users")
+}
+
+model AuthSession {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  lastUsedAt DateTime @default(now())
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model ApiCredential {
+  id         String    @id @default(cuid())
+  userId     String    @unique // 1 User = 1 API Key
+  keyPrefix  String // Safe display identifier e.g. "np_live_a1b2..."
+  keyHash    String    @unique // SHA-256 hash of raw API Key
+  lastUsedAt DateTime?
+  rotatedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([keyHash])
+  @@map("api_credentials")
+}
+
+model WebhookConfig {
+  id        String   @id @default(cuid())
+  userId    String
+  url       String
+  secretKey String
+  isEnabled Boolean  @default(true)
+  events    String[] @default(["TRANSACTION_PAID", "TRANSACTION_EXPIRED", "TRANSACTION_FAILED"])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("webhook_configs")
+}
+
+// -----------------------------------------------------------------------------
+// 2. BILLING & SUBSCRIPTIONS (Plan manages SaaS quota only, NO payment fee)
+// -----------------------------------------------------------------------------
+
+model Plan {
+  id                      String   @id @default(cuid())
+  code                    String   @unique // "FREE", "PRO", etc.
+  name                    String
+  priceMonthly            Int      @default(0) // IDR e.g. 0 for Free, 20000 for Pro
+  monthlyTransactionLimit Int? // null = unlimited (e.g. Pro), 30 for Free
+  paymentAccountLimit     Int      @default(1) // 1 for Free, 3 for Pro
+  features                Json?
+  isPublic                Boolean  @default(true)
+  isActive                Boolean  @default(true)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  userId             String
+  planId             String
+  status             SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart DateTime           @default(now())
+  currentPeriodEnd   DateTime
+  autoRenew          Boolean            @default(true)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model MonthlyUsage {
+  id                String   @id @default(cuid())
+  userId            String
+  yearMonth         String // e.g. "2026-08"
+  totalTransactions Int      @default(0)
+  totalVolume       Decimal  @default(0.00) @db.Decimal(18, 2)
+  apiCallsCount     Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, yearMonth])
+  @@index([userId])
+  @@map("monthly_usages")
+}
+
+// -----------------------------------------------------------------------------
+// 3. PROVIDERS & PAYMENT ACCOUNTS (Generic PaymentAccount, Specific GoBizAccount)
+// -----------------------------------------------------------------------------
+
+model PaymentProvider {
+  id            String   @id @default(cuid())
+  code          String   @unique // e.g. "GOBIZ"
+  name          String
+  isEnabled     Boolean  @default(true)
+  isMaintenance Boolean  @default(false)
+  logoUrl       String?
+  configSchema  Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  providerPaymentMethods ProviderPaymentMethod[]
+  paymentAccounts        PaymentAccount[]
+  transactions           Transaction[]
+  providerEvents         ProviderEvent[]
+
+  @@map("payment_providers")
+}
+
+model PaymentMethod {
+  id        String            @id @default(cuid())
+  code      String            @unique // e.g. "QRIS", "BCA_VA"
+  name      String
+  type      PaymentMethodType @default(QRIS)
+  isEnabled Boolean           @default(true)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  providerPaymentMethods ProviderPaymentMethod[]
+  paymentFeeRules        PaymentFeeRule[]
+  transactions           Transaction[]
+
+  @@map("payment_methods")
+}
+
+model ProviderPaymentMethod {
+  id                 String   @id @default(cuid())
+  providerId         String
+  paymentMethodId    String
+  providerMethodCode String
+  isEnabled          Boolean  @default(true)
+  minAmount          Decimal  @default(1000.00) @db.Decimal(18, 2)
+  maxAmount          Decimal  @default(10000000.00) @db.Decimal(18, 2)
+  providerFeePercent Decimal  @default(0.00) @db.Decimal(5, 2)
+  providerFeeFlat    Decimal  @default(0.00) @db.Decimal(18, 2)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  provider      PaymentProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  paymentMethod PaymentMethod   @relation(fields: [paymentMethodId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, paymentMethodId])
+  @@map("provider_payment_methods")
+}
+
+model PaymentAccount {
+  id           String        @id @default(cuid())
+  userId       String
+  providerId   String
+  name         String
+  status       AccountStatus @default(ACTIVE)
+  isActive     Boolean       @default(true)
+  lastSyncedAt DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       PaymentProvider @relation(fields: [providerId], references: [id])
+  goBizAccount   GoBizAccount?
+  transactions   Transaction[]
+  providerEvents ProviderEvent[]
+
+  @@index([userId])
+  @@index([providerId])
+  @@index([status])
+  @@map("payment_accounts")
+}
+
+model GoBizAccount {
+  id                    String    @id @default(cuid())
+  paymentAccountId      String    @unique
+  merchantId            String
+  outletId              String
+  merchantName          String?
+  outletName            String?
+  loginIdentifier       String
+  credentialEncrypted   String    @db.Text
+  credentialExpiresAt   DateTime?
+  qrString              String?   @db.Text
+  qrUpdatedAt           DateTime?
+  lastConnectionCheckAt DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  paymentAccount PaymentAccount @relation(fields: [paymentAccountId], references: [id], onDelete: Cascade)
+
+  @@map("gobiz_accounts")
+}
+
+model PaymentFeeRule {
+  id              String   @id @default(cuid())
+  userId          String
+  paymentMethodId String
+  isEnabled       Boolean  @default(true)
+  type            FeeType  @default(NONE)
+  value           Int      @default(0) // FLAT in IDR integer; PERCENT in basis points (100 = 1.00%, 70 = 0.70%)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentMethod PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, paymentMethodId])
+  @@map("payment_fee_rules")
+}
+
+// -----------------------------------------------------------------------------
+// 4. TRANSACTIONS & EVENTS (With calculation snapshots)
+// -----------------------------------------------------------------------------
+
+model Transaction {
+  id               String            @id @default(cuid())
+  merchantTradeNo  String
+  externalRefNo    String            @unique
+  userId           String
+  paymentAccountId String
+  paymentMethodId  String
+  providerId       String
+  amount           Decimal           @db.Decimal(18, 2)
+  feeType          FeeType           @default(NONE)
+  feeValue         Int               @default(0) // snapshot of fee rule value (flat IDR or basis points)
+  feeAmount        Decimal           @default(0.00) @db.Decimal(18, 2) // calculated user markup fee
+  uniqueCode       Int               @default(0) // 3-digit unique payment code (e.g. 37)
+  totalAmount      Decimal           @db.Decimal(18, 2) // amount + feeAmount + uniqueCode
+  status           TransactionStatus @default(PENDING)
+  qrisPayload      String?           @db.Text
+  qrisUrl          String?
+  paidAt           DateTime?
+  expiredAt        DateTime
+  customerName     String?
+  customerEmail    String?
+  metadata         Json?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentAccount    PaymentAccount     @relation(fields: [paymentAccountId], references: [id])
+  paymentMethod     PaymentMethod      @relation(fields: [paymentMethodId], references: [id])
+  provider          PaymentProvider    @relation(fields: [providerId], references: [id])
+  events            TransactionEvent[]
+  webhookDeliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([merchantTradeNo])
+  @@index([paymentAccountId])
+  @@index([createdAt])
+  @@index([expiredAt])
+  @@map("transactions")
+}
+
+model TransactionEvent {
+  id            String               @id @default(cuid())
+  transactionId String
+  type          TransactionEventType
+  fromStatus    TransactionStatus?
+  toStatus      TransactionStatus?
+  metadata      Json?
+  createdAt     DateTime             @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([createdAt])
+  @@map("transaction_events")
+}
+
+model ProviderEvent {
+  id               String    @id @default(cuid())
+  providerId       String
+  paymentAccountId String?
+  rawPayload       Json
+  eventType        String
+  providerRefId    String?
+  isProcessed      Boolean   @default(false)
+  processedAt      DateTime?
+  createdAt        DateTime  @default(now())
+
+  provider       PaymentProvider @relation(fields: [providerId], references: [id])
+  paymentAccount PaymentAccount? @relation(fields: [paymentAccountId], references: [id])
+
+  @@index([providerId])
+  @@index([providerRefId])
+  @@index([isProcessed])
+  @@index([createdAt])
+  @@map("provider_events")
+}
+
+// -----------------------------------------------------------------------------
+// 5. WEBHOOKS & RETRY LOG
+// -----------------------------------------------------------------------------
+
+model WebhookDelivery {
+  id            String        @id @default(cuid())
+  userId        String
+  transactionId String?
+  event         String
+  payload       Json
+  status        WebhookStatus @default(PENDING)
+  nextRetryAt   DateTime?
+  attemptsCount Int           @default(0)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transaction Transaction?     @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+  attempts    WebhookAttempt[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@index([transactionId])
+  @@map("webhook_deliveries")
+}
+
+model WebhookAttempt {
+  id                String   @id @default(cuid())
+  webhookDeliveryId String
+  attempt           Int
+  httpStatus        Int?
+  responseBody      String?  @db.Text
+  error             String?  @db.Text
+  durationMs        Int?
+  createdAt         DateTime @default(now())
+
+  webhookDelivery WebhookDelivery @relation(fields: [webhookDeliveryId], references: [id], onDelete: Cascade)
+
+  @@index([webhookDeliveryId])
+  @@index([createdAt])
+  @@map("webhook_attempts")
+}
