@@ -83,7 +83,7 @@ export class AuthService {
   }
 
   /**
-   * Authenticate user, generate secure revocable session token
+   * Authenticate user, generate secure revocable session token (7-day maximum lifetime)
    */
   static async login(input: LoginInput) {
     const normalizedEmail = input.email.trim().toLowerCase();
@@ -109,8 +109,9 @@ export class AuthService {
     const rawSessionToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = hashToken(rawSessionToken);
 
+    // Final Owner Decision: Session lifetime = 7 days
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days session validity
+    expiresAt.setDate(expiresAt.getDate() + 7);
 
     await prisma.authSession.create({
       data: {

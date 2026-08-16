@@ -2,7 +2,7 @@
 
 ## 1. Development Database Configuration
 
-NeetPay uses **PostgreSQL 16+** hosted on Supabase DEV.
+NeetPay V1 uses **PostgreSQL 16+** hosted on Supabase DEV.
 
 ### Environment Variable (`backend/.env`)
 ```env
@@ -19,12 +19,15 @@ ADMIN_NAME="NeetPay Root Admin"
 
 ---
 
-## 2. Prisma Database Workflow
+## 2. Prisma Migration Workflow
 
-### Schema Synchronization
+### Development Workflow
 ```bash
-# Push schema updates directly to development database
-npx prisma db push
+# In Development: create and apply migrations
+npx prisma migrate dev --name <migration_name>
+
+# Check migration status
+npx prisma migrate status
 
 # Generate fresh Prisma Client
 npx prisma generate
@@ -33,8 +36,14 @@ npx prisma generate
 npx prisma validate
 ```
 
+### Production Workflow
+```bash
+# In Production VPS (NO db push, NO interactive migrate dev)
+npx prisma migrate deploy
+```
+
 ### Migration History
-Initial V1 baseline migration script is tracked under:
+Baseline V1 migration script is tracked under:
 `backend/prisma/migrations/20260816_init_v1/migration.sql`
 
 ---
@@ -47,7 +56,7 @@ Executes [**`backend/src/lib/seed.ts`**](file:///D:/project%20web/NEETpay/backen
 * **Plan PRO**: `code: "PRO"`, `priceMonthly: 20000`, `monthlyTransactionLimit: null`, `paymentAccountLimit: 3`
 * **PaymentProvider**: `code: "GOBIZ"`, `name: "GoBiz"`, `isEnabled: true`
 * **PaymentMethod**: `code: "QRIS"`, `type: QRIS`, `isEnabled: true`
-* **ProviderPaymentMethod**: `GOBIZ` $\leftrightarrow$ `QRIS` (`minAmount: 1000`, `maxAmount: 10000000`)
+* **ProviderPaymentMethod**: `GOBIZ` $\leftrightarrow$ `QRIS` (`minAmount: null`, `maxAmount: null` - batasan transaksi dapat dikonfigurasi per user / belum diasumsikan paten).
 
 ### 3.2 Root Admin Seeding (`npm run seed:admin`)
 Executes [**`backend/src/lib/seed-admin.ts`**](file:///D:/project%20web/NEETpay/backend/src/lib/seed-admin.ts):
@@ -65,24 +74,26 @@ Run the full end-to-end runtime test suite:
 npm run test:auth
 ```
 
-### Verification Checklist (20 Tests)
+### Verification Checklist (22 Tests)
 1. Base seed executed successfully
 2. Plan FREE exists with exact V1 quota
 3. Plan PRO exists with exact V1 quota
-4. Payment Provider GOBIZ exists
-5. Payment Method QRIS exists
-6. ProviderPaymentMethod GOBIZ $\leftrightarrow$ QRIS mapping exists
-7. Register USER via `POST /api/auth/register` succeeded
-8. Duplicate email registration rejected with `409 Conflict`
-9. Public registration cannot escalate role to ADMIN (role is strictly USER)
-10. Login with correct password succeeded and returned session
-11. Login with incorrect password rejected with `401 Unauthorized`
-12. `GET /api/me` with session returned user profile and FREE subscription
-13. `GET /api/me` without session rejected with `401 Unauthorized`
-14. `POST /api/auth/logout` successfully revoked the session
-15. Admin seed created/verified ADMIN account with bcrypt hash
-16. `POST /api/api-key/generate` generated `np_live_...` API key
-17. Raw API key is NOT stored in database (stored as SHA-256 hash only)
-18. Second API key generation rejected with `409 Conflict` (1 User = 1 Key)
-19. `POST /api/api-key/rotate` rotated key and returned new raw key once
-20. `requireApiKey` rejects rotated old key and authorizes new key
+4. GOBIZ $\leftrightarrow$ QRIS mapping exists with unassumed limits (min/max null)
+5. Register USER via `POST /api/auth/register` succeeded
+6. Duplicate email registration rejected with `409 Conflict`
+7. Public registration cannot escalate role to ADMIN (role is strictly USER)
+8. `POST /api/auth/login` sets HttpOnly cookie & response JSON does NOT leak raw token
+9. Dashboard session lifetime is exactly 7 days
+10. Login with incorrect password rejected with `401 Unauthorized`
+11. `GET /api/me` with valid HttpOnly cookie returned user profile & subscription
+12. `GET /api/me` without cookie rejected with `401 Unauthorized`
+13. Dashboard auth rejects API key used as session cookie (Boundary Check)
+14. Expired session is strictly rejected with `401 Unauthorized`
+15. `POST /api/auth/logout` revoked session and cleared cookie
+16. Admin seed created/verified ADMIN account with bcrypt hash
+17. `POST /api/api-key/generate` generated `np_live_...` API key
+18. Raw API key is NOT stored in database (SHA-256 hash only)
+19. Second API key generation rejected with `409 Conflict` (1 User = 1 Key)
+20. `POST /api/api-key/rotate` rotated key and returned new raw key once
+21. Merchant API rejects dashboard session used as Bearer token (Boundary Check)
+22. `requireApiKey` rejects rotated old key and authorizes new key

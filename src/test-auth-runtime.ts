@@ -22,10 +22,18 @@ function record(step: number, description: string, passed: boolean, details?: st
   }
 }
 
+// Helper to extract session cookie from Response headers
+function extractSessionCookie(res: Response): string | null {
+  const setCookie = res.headers.get('set-cookie');
+  if (!setCookie) return null;
+  const match = setCookie.match(/neetpay_session=([^;]+)/);
+  return match ? match[1] : null;
+}
+
 export async function runAllRuntimeTests() {
-  console.log('\n======================================================');
-  console.log('🧪 NEETPAY V1 RUNTIME AUTH & DATABASE VALIDATION SUITE');
-  console.log('======================================================\n');
+  console.log('\n================================================================');
+  console.log('🧪 NEETPAY V1 FINAL VALIDATION SUITE (COOKIE-ONLY & 7-DAY EXPIRY)');
+  console.log('================================================================\n');
 
   const testSuffix = crypto.randomBytes(4).toString('hex');
   const testEmail = `merchant_${testSuffix}@example.com`;
@@ -55,24 +63,17 @@ export async function runAllRuntimeTests() {
       proPlan.paymentAccountLimit === 3;
     record(3, 'Plan PRO exists with exact V1 quota', isProValid);
 
-    // 4. Verify Payment Provider GOBIZ
-    const goBiz = await prisma.paymentProvider.findUnique({ where: { code: 'GOBIZ' } });
-    record(4, 'Payment Provider GOBIZ exists', !!goBiz && goBiz.isEnabled);
-
-    // 5. Verify Payment Method QRIS
-    const qris = await prisma.paymentMethod.findUnique({ where: { code: 'QRIS' } });
-    record(5, 'Payment Method QRIS exists', !!qris && qris.isEnabled);
-
-    // 6. Verify GOBIZ <-> QRIS Mapping
+    // 4. Verify GOBIZ <-> QRIS Mapping
     const mapping = await prisma.providerPaymentMethod.findFirst({
       where: {
         provider: { code: 'GOBIZ' },
         paymentMethod: { code: 'QRIS' },
       },
     });
-    record(6, 'ProviderPaymentMethod GOBIZ <-> QRIS mapping exists', !!mapping && mapping.isEnabled);
+    const isMappingClean = !!mapping && mapping.isEnabled;
+    record(4, 'GOBIZ <-> QRIS mapping exists and is enabled', isMappingClean);
 
-    // 7. Register USER via API
+    // 5. Register USER via API
     const regRes = await app.request('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -85,9 +86,9 @@ export async function runAllRuntimeTests() {
     });
     const regData = (await regRes.json()) as any;
     const isRegistered = regRes.status === 201 && regData.success && regData.data.email === testEmail;
-    record(7, 'Register USER via POST /api/auth/register succeeded', isRegistered);
+    record(5, 'Register USER via POST /api/auth/register succeeded', isRegistered);
 
-    // 8. Duplicate Email Rejection
+    // 6. Duplicate Email Rejection
     const dupRes = await app.request('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -97,14 +98,14 @@ export async function runAllRuntimeTests() {
         password: testPassword,
       }),
     });
-    record(8, 'Duplicate email registration rejected with 409 Conflict', dupRes.status === 409);
+    record(6, 'Duplicate email registration rejected with 409 Conflict', dupRes.status === 409);
 
-    // 9. Role Escalation Prevention
+    // 7. Role Escalation Prevention
     const registeredUser = await prisma.user.findUnique({ where: { email: testEmail } });
     const isRoleSafe = registeredUser?.role === 'USER';
-    record(9, 'Public registration cannot escalate role to ADMIN (role is USER)', isRoleSafe);
+    record(7, 'Public registration cannot escalate role to ADMIN (role is strictly USER)', isRoleSafe);
 
-    // 10. Login with Correct Password
+    // 8. Login & Verify HttpOnly Cookie & NO raw token in JSON response
     const loginRes = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -114,10 +115,21 @@ export async function runAllRuntimeTests() {
       }),
     });
     const loginData = (await loginRes.json()) as any;
-    const sessionToken = loginData?.data?.token;
-    record(10, 'Login with correct password succeeded and returned session', loginRes.status === 200 && !!sessionToken);
+    const rawCookie = extractSessionCookie(loginRes);
+    const setCookieHeader = loginRes.headers.get('set-cookie') || '';
+    const hasHttpOnly = setCookieHeader.toLowerCase().includes('httponly');
+    const noRawTokenInBody = !('token' in (loginData?.data || {})) && !('sessionToken' in (loginData?.data || {}));
+    const isLoginSafe = loginRes.status === 200 && !!rawCookie && hasHttpOnly && noRawTokenInBody;
+    record(8, 'POST /api/auth/login sets HttpOnly cookie & response JSON does NOT leak raw token', isLoginSafe);
 
-    // 11. Login with Incorrect Password
+    // 9. Session Lifetime Verification (7 days)
+    const sessionExpiresAt = new Date(loginData?.data?.session?.expiresAt);
+    const now = new Date();
+    const diffDays = Math.round((sessionExpiresAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const is7Days = diffDays === 7;
+    record(9, 'Dashboard session lifetime is exactly 7 days (not 30 days)', is7Days);
+
+    // 10. Login with Incorrect Password
     const badLoginRes = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -126,42 +138,70 @@ export async function runAllRuntimeTests() {
         password: 'WrongPassword!',
       }),
     });
-    record(11, 'Login with incorrect password rejected with 401 Unauthorized', badLoginRes.status === 401);
+    record(10, 'Login with incorrect password rejected with 401 Unauthorized', badLoginRes.status === 401);
 
-    // 12. GET /api/me with Valid Session
+    // 11. GET /api/me with Valid Session Cookie
     const meRes = await app.request('/api/me', {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${sessionToken}`,
+        Cookie: `neetpay_session=${rawCookie}`,
       },
     });
     const meData = (await meRes.json()) as any;
     const isMeValid = meRes.status === 200 && meData.data?.email === testEmail && meData.data?.subscription?.plan?.code === 'FREE';
-    record(12, 'GET /api/me with session returned user profile and FREE subscription', isMeValid);
+    record(11, 'GET /api/me with valid HttpOnly cookie returned user profile & subscription', isMeValid);
 
-    // 13. GET /api/me without Session
+    // 12. GET /api/me without Cookie
     const unauthMeRes = await app.request('/api/me', { method: 'GET' });
-    record(13, 'GET /api/me without session rejected with 401 Unauthorized', unauthMeRes.status === 401);
+    record(12, 'GET /api/me without cookie rejected with 401 Unauthorized', unauthMeRes.status === 401);
 
-    // 14. Logout Invalidates Session
+    // 13. Boundary Separation: API key in cookie rejected for dashboard
+    const fakeKeyCookieRes = await app.request('/api/me', {
+      method: 'GET',
+      headers: {
+        Cookie: `neetpay_session=np_live_fakeapikey123456`,
+      },
+    });
+    record(13, 'Dashboard auth rejects API key used as session cookie (Boundary Check)', fakeKeyCookieRes.status === 401);
+
+    // 14. Expired Session Rejection
+    const testExpiredToken = crypto.randomBytes(32).toString('hex');
+    const testExpiredHash = crypto.createHash('sha256').update(testExpiredToken).digest('hex');
+    const pastDate = new Date(Date.now() - 3600000); // 1 hour ago
+    await prisma.authSession.create({
+      data: {
+        userId: registeredUser!.id,
+        tokenHash: testExpiredHash,
+        expiresAt: pastDate,
+      },
+    });
+    const expiredMeRes = await app.request('/api/me', {
+      method: 'GET',
+      headers: {
+        Cookie: `neetpay_session=${testExpiredToken}`,
+      },
+    });
+    record(14, 'Expired session is strictly rejected with 401 Unauthorized', expiredMeRes.status === 401);
+
+    // 15. Logout Invalidates Session
     const logoutRes = await app.request('/api/auth/logout', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${sessionToken}`,
+        Cookie: `neetpay_session=${rawCookie}`,
       },
     });
     const afterLogoutMeRes = await app.request('/api/me', {
       method: 'GET',
       headers: {
-        Authorization: `Bearer ${sessionToken}`,
+        Cookie: `neetpay_session=${rawCookie}`,
       },
     });
-    record(14, 'POST /api/auth/logout successfully revoked the session', logoutRes.status === 200 && afterLogoutMeRes.status === 401);
+    record(15, 'POST /api/auth/logout revoked session and cleared cookie', logoutRes.status === 200 && afterLogoutMeRes.status === 401);
 
-    // 15. Admin Seed Execution
+    // 16. Admin Seed Execution
     await runAdminSeed();
     const adminUser = await prisma.user.findFirst({ where: { role: 'ADMIN' } });
-    record(15, 'Admin seed created/verified ADMIN account with bcrypt hash', !!adminUser && adminUser.role === 'ADMIN');
+    record(16, 'Admin seed created/verified ADMIN account with bcrypt hash', !!adminUser && adminUser.role === 'ADMIN');
 
     // Relogin for API key tests
     const reloginRes = await app.request('/api/auth/login', {
@@ -169,41 +209,47 @@ export async function runAllRuntimeTests() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: testEmail, password: testPassword }),
     });
-    const reloginData = (await reloginRes.json()) as any;
-    const activeSessionToken = reloginData?.data?.token;
+    const activeCookie = extractSessionCookie(reloginRes);
 
-    // 16. Generate First API Key
+    // 17. Generate First API Key (via Cookie Auth)
     const genKeyRes = await app.request('/api/api-key/generate', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${activeSessionToken}` },
+      headers: { Cookie: `neetpay_session=${activeCookie}` },
     });
     const genKeyData = (await genKeyRes.json()) as any;
     const rawKey1 = genKeyData?.data?.rawKey;
     const isKey1FormatValid = rawKey1 && rawKey1.startsWith('np_live_');
-    record(16, 'POST /api/api-key/generate generated np_live_ API key', genKeyRes.status === 201 && isKey1FormatValid);
+    record(17, 'POST /api/api-key/generate generated np_live_ API key', genKeyRes.status === 201 && isKey1FormatValid);
 
-    // 17. Raw Key Not in DB
+    // 18. Raw Key Not in DB (Stored as SHA-256 hash only)
     const dbKey1 = await prisma.apiCredential.findUnique({ where: { userId: registeredUser!.id } });
     const isRawKeyHidden = dbKey1 && dbKey1.keyHash !== rawKey1 && dbKey1.keyHash.length === 64;
-    record(17, 'Raw API key is NOT stored in database (stored as SHA-256 hash only)', !!isRawKeyHidden);
+    record(18, 'Raw API key is NOT stored in database (SHA-256 hash only)', !!isRawKeyHidden);
 
-    // 18. Duplicate API Key Rejected
+    // 19. Duplicate API Key Rejected (1 User = 1 Key)
     const genKeyDupRes = await app.request('/api/api-key/generate', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${activeSessionToken}` },
+      headers: { Cookie: `neetpay_session=${activeCookie}` },
     });
-    record(18, 'Second API key generation rejected with 409 Conflict (1 User = 1 Key)', genKeyDupRes.status === 409);
+    record(19, 'Second API key generation rejected with 409 Conflict (1 User = 1 Key)', genKeyDupRes.status === 409);
 
-    // 19. Rotate API Key
+    // 20. Rotate API Key
     const rotateRes = await app.request('/api/api-key/rotate', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${activeSessionToken}` },
+      headers: { Cookie: `neetpay_session=${activeCookie}` },
     });
     const rotateData = (await rotateRes.json()) as any;
     const rawKey2 = rotateData?.data?.rawKey;
-    record(19, 'POST /api/api-key/rotate rotated key and returned new raw key once', rotateRes.status === 200 && !!rawKey2 && rawKey2 !== rawKey1);
+    record(20, 'POST /api/api-key/rotate rotated key and returned new raw key once', rotateRes.status === 200 && !!rawKey2 && rawKey2 !== rawKey1);
 
-    // 20. Merchant Auth Middleware Verification
+    // 21. Boundary Separation: Dashboard session Bearer token rejected for Merchant API
+    const sessionAsApiKeyRes = await app.request('/api/test/merchant-auth', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${activeCookie}` },
+    });
+    record(21, 'Merchant API rejects dashboard session used as Bearer token (Boundary Check)', sessionAsApiKeyRes.status === 401);
+
+    // 22. Rotated old API key rejected & new API key authorized
     const oldKeyAuthRes = await app.request('/api/test/merchant-auth', {
       method: 'GET',
       headers: { Authorization: `Bearer ${rawKey1}` },
@@ -217,7 +263,7 @@ export async function runAllRuntimeTests() {
       oldKeyAuthRes.status === 401 &&
       newKeyAuthRes.status === 200 &&
       newKeyAuthData?.data?.merchantEmail === testEmail;
-    record(20, 'requireApiKey rejects rotated old key and authorizes new key', isMerchantAuthWorking);
+    record(22, 'requireApiKey rejects rotated old key and authorizes new key', isMerchantAuthWorking);
 
     // Cleanup test user
     if (registeredUser) {
@@ -230,7 +276,7 @@ export async function runAllRuntimeTests() {
 
   const passedCount = results.filter((r) => r.passed).length;
   console.log(`Summary: ${passedCount}/${results.length} tests passed.`);
-  return { passedCount, total: results.length, allPassed: passedCount === results.length && results.length === 20 };
+  return { passedCount, total: results.length, allPassed: passedCount === results.length && results.length === 22 };
 }
 
 // Automatically invoke

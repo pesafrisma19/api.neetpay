@@ -11,20 +11,25 @@ export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+/**
+ * Dashboard Session Authentication Middleware
+ * Strictly expects valid HttpOnly session cookie (neetpay_session).
+ * Does NOT accept merchant API keys.
+ */
 export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
-  // Extract token from cookie or Authorization header
-  let rawToken = getCookie(c, SESSION_COOKIE_NAME);
-
-  if (!rawToken) {
-    const authHeader = c.req.header('Authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      rawToken = authHeader.substring(7).trim();
-    }
-  }
+  const rawToken = getCookie(c, SESSION_COOKIE_NAME);
 
   if (!rawToken) {
     return c.json(
       errorResponse('UNAUTHORIZED', 'Authentication session required. Please log in.'),
+      401
+    );
+  }
+
+  // Ensure rawToken is not an API key accidentally sent in cookie
+  if (rawToken.startsWith('np_live_')) {
+    return c.json(
+      errorResponse('UNAUTHORIZED', 'API Keys cannot be used as dashboard session credentials.'),
       401
     );
   }
@@ -55,11 +60,11 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
     );
   }
 
+  // Check 7-day expiration
   if (session.expiresAt < new Date()) {
-    // Delete expired session asynchronously
     prisma.authSession.delete({ where: { id: session.id } }).catch(() => {});
     return c.json(
-      errorResponse('SESSION_EXPIRED', 'Session has expired. Please log in again.'),
+      errorResponse('SESSION_EXPIRED', 'Session has expired (7-day maximum lifetime). Please log in again.'),
       401
     );
   }

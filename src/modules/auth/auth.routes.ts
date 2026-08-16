@@ -53,7 +53,7 @@ authRouter.post('/register', async (c) => {
 });
 
 /**
- * User Login & Session Creation
+ * User Login & Session Creation (HttpOnly Cookie ONLY - No raw token in JSON)
  * POST /api/auth/login
  */
 authRouter.post('/login', async (c) => {
@@ -77,15 +77,20 @@ authRouter.post('/login', async (c) => {
       userAgent,
     });
 
-    // Set secure HttpOnly cookie
+    // 7-day session lifetime in seconds (7 * 24 * 60 * 60)
+    const MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+
+    // Set secure HttpOnly cookie exclusively
     setCookie(c, SESSION_COOKIE_NAME, result.sessionToken, {
       httpOnly: true,
       secure: env.NODE_ENV === 'production',
       sameSite: env.NODE_ENV === 'production' ? 'lax' : 'lax',
       path: '/',
+      maxAge: MAX_AGE_SECONDS,
       expires: result.expiresAt,
     });
 
+    // Raw sessionToken is intentionally NOT returned in JSON response body (Cookie-Only)
     return c.json(
       successResponse(
         {
@@ -93,7 +98,6 @@ authRouter.post('/login', async (c) => {
           session: {
             expiresAt: result.expiresAt,
           },
-          token: result.sessionToken, // Also returned in JSON for API/SPA convenience
         },
         'Logged in successfully'
       )
@@ -120,7 +124,7 @@ authRouter.post('/login', async (c) => {
  * POST /api/auth/logout
  */
 authRouter.post('/logout', async (c) => {
-  const rawToken = getCookie(c, SESSION_COOKIE_NAME) || c.req.header('Authorization')?.replace('Bearer ', '').trim();
+  const rawToken = getCookie(c, SESSION_COOKIE_NAME);
 
   if (rawToken) {
     await AuthService.logout(rawToken);

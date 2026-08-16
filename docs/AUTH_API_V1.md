@@ -2,9 +2,21 @@
 
 ## 1. Overview & Security Architecture
 
-NeetPay V1 features dual-layer authentication:
-1. **Dashboard & Web Session Auth**: Stateful, revocable session token stored in HttpOnly, secure cookies (or Bearer header) with SHA-256 hash tracking in PostgreSQL (`AuthSession`).
-2. **Merchant API Key Auth**: Single API key per user (`1 User = 1 ApiCredential`) formatted as `np_live_<crypto_hex>`, validated via `Authorization: Bearer np_live_...`.
+NeetPay V1 implements strict separation between **Dashboard Authentication** and **Merchant Public API Authentication**:
+
+1. **Dashboard & Web Session Auth (`requireAuth`)**:
+   - Strictly uses **HttpOnly Session Cookie** (`neetpay_session`).
+   - Session maximum lifetime: **7 hari** (bukan 30 hari).
+   - Response JSON saat login **TIDAK** mengekspos `sessionToken` / `token` ke response body.
+   - Database hanya menyimpan **`tokenHash` (SHA-256)** di model `AuthSession`.
+   - API key `np_live_...` **TIDAK** diterima sebagai session cookie dashboard.
+
+2. **Merchant Public API Auth (`requireApiKey`)**:
+   - Single API key per user (`1 User = 1 ApiCredential`).
+   - Format: `np_live_<crypto_hex>`.
+   - Dikirimkan via header: `Authorization: Bearer np_live_...`.
+   - Database hanya menyimpan `keyPrefix` dan `keyHash` (SHA-256).
+   - Dashboard session cookie/token **TIDAK** diterima sebagai Merchant API key.
 
 ---
 
@@ -17,8 +29,7 @@ All NeetPay API endpoints adhere to a unified JSON response envelope:
 {
   "success": true,
   "data": { ... },
-  "message": "Human readable success message",
-  "meta": { ... }
+  "message": "Human readable success message"
 }
 ```
 
@@ -76,10 +87,10 @@ All NeetPay API endpoints adhere to a unified JSON response envelope:
 
 ---
 
-### 3.2 User Login
+### 3.2 User Login (Cookie ONLY)
 * **Endpoint**: `POST /api/auth/login`
 * **Access**: Public
-* **Description**: Authenticates user credentials, issues a 30-day cryptographically secure session token, and sets an `HttpOnly` cookie (`neetpay_session`).
+* **Description**: Authenticates user credentials, creates a 7-day session in database, and sets an `HttpOnly` cookie (`neetpay_session`).
 
 #### Request Body
 ```json
@@ -91,7 +102,7 @@ All NeetPay API endpoints adhere to a unified JSON response envelope:
 
 #### Response Headers
 ```http
-Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000
+Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800; Expires=Sun, 23 Aug 2026 12:00:00 GMT
 ```
 
 #### Response Body (`200 OK`)
@@ -108,19 +119,19 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
       "createdAt": "2026-08-16T12:00:00.000Z"
     },
     "session": {
-      "expiresAt": "2026-09-15T12:00:00.000Z"
-    },
-    "token": "a1b2c3d4e5f6..."
+      "expiresAt": "2026-08-23T12:00:00.000Z"
+    }
   },
   "message": "Logged in successfully"
 }
 ```
+*(Catatan: Raw token credential tidak pernah diekspos di response JSON).*
 
 ---
 
 ### 3.3 User Logout
 * **Endpoint**: `POST /api/auth/logout`
-* **Access**: Authenticated Session
+* **Access**: Authenticated Session (Cookie)
 * **Description**: Revokes and deletes the current `AuthSession` record from PostgreSQL and clears the session cookie.
 
 #### Response (`200 OK`)
@@ -138,8 +149,7 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
 
 ### 3.4 Get Current Profile (`/api/me`)
 * **Endpoint**: `GET /api/me`
-* **Access**: Authenticated (`requireAuth`)
-* **Headers**: `Cookie: neetpay_session=...` or `Authorization: Bearer <token>`
+* **Access**: Authenticated (`requireAuth` via HttpOnly cookie `neetpay_session`)
 
 #### Response (`200 OK`)
 ```json
@@ -180,7 +190,7 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
 
 ### 4.1 Get API Key Metadata
 * **Endpoint**: `GET /api/api-key`
-* **Access**: Authenticated (`requireAuth`)
+* **Access**: Authenticated (`requireAuth` via Cookie)
 * **Description**: Returns safe metadata for the authenticated user's API Key (never exposes raw keys or hashes).
 
 #### Response (`200 OK`)
@@ -202,8 +212,8 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
 
 ### 4.2 Generate API Key
 * **Endpoint**: `POST /api/api-key/generate`
-* **Access**: Authenticated (`requireAuth`)
-* **Description**: Generates the user's initial API key. Returns raw key **ONCE**. Rejects with `409 Conflict` if an API key already exists (must use rotate).
+* **Access**: Authenticated (`requireAuth` via Cookie)
+* **Description**: Generates the user's initial API key. Returns raw key **ONCE**. Rejects with `409 Conflict` if an API key already exists.
 
 #### Response (`201 Created`)
 ```json
@@ -223,7 +233,7 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
 
 ### 4.3 Rotate API Key
 * **Endpoint**: `POST /api/api-key/rotate`
-* **Access**: Authenticated (`requireAuth`)
+* **Access**: Authenticated (`requireAuth` via Cookie)
 * **Description**: Generates a new API key, updates the stored SHA-256 hash, and marks `rotatedAt`. The old API key is immediately and permanently invalidated. Returns new raw key **ONCE**.
 
 #### Response (`200 OK`)
@@ -242,7 +252,7 @@ Set-Cookie: neetpay_session=0123456789abcdef...; Path=/; HttpOnly; SameSite=Lax;
 
 ---
 
-## 5. Merchant API Key Authentication Middleware
+## 5. Merchant Public API Authentication Middleware (`requireApiKey`)
 
 Public merchant endpoints (e.g. creating transactions, checking transaction status) authenticate using the API key:
 
@@ -253,7 +263,7 @@ Authorization: Bearer np_live_a1b2c3d4e5f67890abcdef1234567890abcdef1234567890
 
 ### Security Flow
 1. Middleware extracts `rawKey` from `Authorization: Bearer ...`.
-2. Asserts prefix starts with `np_live_`.
+2. Asserts prefix starts with `np_live_`. (Rejects session cookies).
 3. Computes `SHA-256(rawKey)`.
 4. Queries `ApiCredential` by `keyHash`.
 5. Verifies associated merchant user is `ACTIVE`.
