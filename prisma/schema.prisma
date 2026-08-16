@@ -271,15 +271,17 @@ model ProviderPaymentMethod {
 }
 
 model PaymentAccount {
-  id           String        @id @default(cuid())
-  userId       String
-  providerId   String
-  name         String
-  status       AccountStatus @default(ACTIVE)
-  isActive     Boolean       @default(true)
-  lastSyncedAt DateTime?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  userId          String
+  providerId      String
+  name            String
+  customMinAmount Decimal?      @db.Decimal(18, 2)
+  customMaxAmount Decimal?      @db.Decimal(18, 2)
+  status          AccountStatus @default(ACTIVE)
+  isActive        Boolean       @default(true)
+  lastSyncedAt    DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider       PaymentProvider @relation(fields: [providerId], references: [id])

@@ -6,6 +6,7 @@ import { requestLogger } from './middleware/logger.middleware.js';
 import { successResponse } from './lib/response.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { apiKeyRouter } from './modules/api-keys/api-keys.routes.js';
+import { paymentAccountsRouter } from './modules/payment-accounts/payment-accounts.routes.js';
 import { requireApiKey } from './middleware/api-key.middleware.js';
 import type { AppEnv } from './types/hono.js';
 
@@ -52,6 +53,7 @@ app.get('/health', (c) => {
 // Mount Routes
 app.route('/api/auth', authRouter);
 app.route('/api/api-key', apiKeyRouter);
+app.route('/api/payment-accounts', paymentAccountsRouter);
 
 // Forward /api/me to authRouter /me
 app.get('/api/me', (c) => authRouter.fetch(new Request(`${new URL(c.req.url).origin}/me`, c.req.raw)));
