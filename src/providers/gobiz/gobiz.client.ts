@@ -35,38 +35,61 @@ export class GoBizClient {
   private static BASE_URL = 'https://api.gobiz.co.id';
   private static PORTAL_URL = 'https://portal.gofoodmerchant.co.id';
 
-  private static getHeaders(extraHeaders: Record<string, string> = {}) {
+  /**
+   * Verified GoBiz Web Dashboard Headers (Tested & active live format)
+   */
+  private static getHeaders(uniqueId: string = crypto.randomUUID(), extraHeaders: Record<string, string> = {}) {
     return {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json, text/plain, */*',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'X-Appid': 'go-biz-web-dashboard',
-      'X-Appversion': 'platform-v3.98.1-bf97ae9c',
-      'X-Deviceos': 'web',
-      'X-Platform': 'Web',
-      'X-User-Type': 'merchant',
-      'X-Uniqueid': crypto.randomUUID(),
+      'accept': 'application/json, text/plain, */*',
+      'accept-language': 'id',
+      'authentication-type': 'go-id',
+      'authorization': 'Bearer',
+      'cache-control': 'no-cache',
+      'content-type': 'application/json',
+      'gojek-country-code': 'ID',
+      'gojek-timezone': 'Asia/Jakarta',
+      'pragma': 'no-cache',
+      'sec-ch-ua': '"Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+      'sec-ch-ua-mobile': '?1',
+      'sec-ch-ua-platform': '"Android"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'cross-site',
+      'sec-gpc': '1',
+      'x-appid': 'go-biz-web-dashboard',
+      'x-appversion': 'platform-v3.108.1-66161c15',
+      'x-deviceos': 'Web',
+      'x-phonemake': 'Linux 64-bit',
+      'x-phonemodel': 'Chrome 149.0.0.0 on Linux 64-bit',
+      'x-platform': 'Web',
+      'x-uniqueid': uniqueId,
+      'x-user-locale': 'en-US',
+      'x-user-type': 'merchant',
+      'referrer': 'https://portal.gofoodmerchant.co.id/',
+      'origin': 'https://portal.gofoodmerchant.co.id',
       ...extraHeaders,
     };
   }
 
   /**
    * Request 4-digit SMS OTP from GoBiz
+   * Endpoint: POST https://api.gobiz.co.id/goid/login/request
    */
-  static async requestOtp(phoneNumber: string): Promise<{ otpToken: string; uniqueId: string }> {
-    let cleanPhone = phoneNumber.trim().replace(/^0/, '62').replace(/^\+/, '');
-    if (!cleanPhone.startsWith('62')) {
-      cleanPhone = `62${cleanPhone}`;
-    }
+  static async requestOtp(phoneNumber: string): Promise<{ otpToken: string; uniqueId: string; otpExpiresIn?: number; otpLength?: number }> {
+    let cleanPhone = phoneNumber.trim().replace(/\s+/g, '');
+    if (cleanPhone.startsWith('+62')) cleanPhone = cleanPhone.slice(3);
+    else if (cleanPhone.startsWith('62')) cleanPhone = cleanPhone.slice(2);
+    else if (cleanPhone.startsWith('0')) cleanPhone = cleanPhone.slice(1);
 
-    const headers = this.getHeaders();
-    const response = await fetch(`${this.BASE_URL}/goid/otp/request`, {
+    const uniqueId = crypto.randomUUID();
+    const headers = this.getHeaders(uniqueId);
+    const response = await fetch(`${this.BASE_URL}/goid/login/request`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         client_id: 'go-biz-web-new',
         phone_number: cleanPhone,
-        country_code: 'ID',
+        country_code: '62',
       }),
     });
 
@@ -84,29 +107,35 @@ export class GoBizClient {
 
     const data = (await response.json()) as any;
     const otpToken = data.otp_token || data.data?.otp_token;
-    const uniqueId = data.unique_id || data.data?.unique_id || crypto.randomUUID();
 
     if (!otpToken) {
-      throw new Error('GoBiz did not return otp_token');
+      throw new Error(data.errors?.[0]?.message || 'GoBiz did not return otp_token');
     }
 
-    return { otpToken, uniqueId };
+    return {
+      otpToken,
+      uniqueId,
+      otpExpiresIn: data.data?.otp_expires_in || 720,
+      otpLength: data.data?.otp_length || 4,
+    };
   }
 
   /**
    * Verify 4-digit SMS OTP and receive initial Access & Refresh Tokens
+   * Endpoint: POST https://api.gobiz.co.id/goid/token
    */
-  static async verifyOtp(otpToken: string, otp: string, uniqueId: string): Promise<GoBizTokenInfo> {
-    const headers = this.getHeaders();
+  static async verifyOtp(otpToken: string, otp: string, uniqueId: string = crypto.randomUUID()): Promise<GoBizTokenInfo> {
+    const headers = this.getHeaders(uniqueId);
     const response = await fetch(`${this.BASE_URL}/goid/token`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         client_id: 'go-biz-web-new',
         grant_type: 'otp',
-        otp,
-        otp_token: otpToken,
-        unique_id: uniqueId,
+        data: {
+          otp,
+          otp_token: otpToken,
+        },
       }),
     });
 
@@ -125,7 +154,7 @@ export class GoBizClient {
     const data = (await response.json()) as any;
 
     if (!data.access_token) {
-      throw new Error('GoBiz did not return access_token');
+      throw new Error(data.errors?.[0]?.message || 'GoBiz did not return access_token');
     }
 
     return {
@@ -138,11 +167,13 @@ export class GoBizClient {
 
   /**
    * Direct Login using GoBiz Email & Password (2-Step OAuth Flow)
+   * Step 1: POST https://api.gobiz.co.id/goid/login/request
+   * Step 2: POST https://api.gobiz.co.id/goid/token
    */
-  static async loginWithPassword(email: string, password: string): Promise<GoBizTokenInfo> {
-    const headers = this.getHeaders();
+  static async loginWithPassword(email: string, password: string, uniqueId: string = crypto.randomUUID()): Promise<GoBizTokenInfo> {
+    const headers = this.getHeaders(uniqueId);
 
-    // Step 1: Login Request
+    // Step 1: Login Request (Initiate)
     const step1Res = await fetch(`${this.BASE_URL}/goid/login/request`, {
       method: 'POST',
       headers,
@@ -205,7 +236,7 @@ export class GoBizClient {
     const data = (await step2Res.json()) as any;
 
     if (!data.access_token) {
-      throw new Error('GoBiz login succeeded but no access_token found in response');
+      throw new Error(data.errors?.[0]?.message || 'GoBiz login succeeded but no access_token found in response');
     }
 
     return {
@@ -219,8 +250,8 @@ export class GoBizClient {
   /**
    * Refresh access token using refresh token
    */
-  static async refreshAccessToken(refreshToken: string): Promise<GoBizTokenInfo> {
-    const headers = this.getHeaders();
+  static async refreshAccessToken(refreshToken: string, uniqueId: string = crypto.randomUUID()): Promise<GoBizTokenInfo> {
+    const headers = this.getHeaders(uniqueId);
 
     const response = await fetch(`${this.BASE_URL}/goid/token`, {
       method: 'POST',
@@ -257,10 +288,34 @@ export class GoBizClient {
   static async getMerchantProfile(accessToken: string): Promise<GoBizMerchantProfile> {
     const headers = {
       ...this.getHeaders(),
-      'Authorization': `Bearer ${accessToken}`,
+      'authorization': `Bearer ${accessToken}`,
       'x-tencent': 'true',
     };
 
+    // Primary: /v1/merchants/search
+    try {
+      const searchRes = await fetch(`${this.BASE_URL}/v1/merchants/search`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ from: 0, to: 10 }),
+      });
+      if (searchRes.ok) {
+        const searchData = (await searchRes.json()) as any;
+        const m = searchData.merchants?.[0];
+        if (m) {
+          return {
+            merchantId: m.id || 'UNKNOWN_MERCHANT',
+            outletName: m.name || m.outlet_name || m.official_name || 'My GoBiz Store',
+            outletAddress: m.address || m.outlet_city || '',
+            phone: m.phone || '',
+            kycStatus: m.applications?.gopay?.kyc_approved || 'approved',
+            rawMerchant: m,
+          };
+        }
+      }
+    } catch {}
+
+    // Fallback: /goresto/v5/public/users/config
     const response = await fetch(`${this.BASE_URL}/goresto/v5/public/users/config`, {
       method: 'GET',
       headers,
@@ -364,8 +419,6 @@ export class GoBizClient {
         const tx = hit.metadata?.transaction || {};
 
         // Explicit Minor Unit Normalization:
-        // GoBiz metadata.transaction.gross_amount is defined in minor units (cents)
-        // e.g. 5003700 -> Rp 50.037 (gross_amount / 100)
         let normalizedAmount = 0;
         if (typeof tx.gross_amount === 'number' && tx.gross_amount > 0) {
           normalizedAmount = tx.gross_amount / 100;
@@ -403,10 +456,6 @@ export class GoBizClient {
         };
       })
       .filter((item) => {
-        // Strict Eligibility Filter:
-        // 1. Must be QRIS
-        // 2. Must be settled / captured / success
-        // 3. Amount > 0
         const isQris = item.paymentMethod === 'QRIS';
         const isSuccess = ['SETTLEMENT', 'CAPTURE', 'SUCCESS'].includes(item.status);
         return isQris && isSuccess && item.amount > 0;
@@ -414,9 +463,31 @@ export class GoBizClient {
   }
 
   /**
-   * Automatically fetch static QRIS string (aspi_qr_string) from GoBiz Merchant Portal
+   * Automatically fetch static QRIS string (aspi_qr_string) from GoBiz Merchant Portal / API
    */
   static async fetchQrisStringFromPortal(accessToken: string): Promise<string | null> {
+    const headers = {
+      ...this.getHeaders(),
+      'authorization': `Bearer ${accessToken}`,
+    };
+
+    // Primary: extract from /v1/merchants/search pops[0].gopay.aspi_qr_string
+    try {
+      const res = await fetch(`${this.BASE_URL}/v1/merchants/search`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ from: 0, to: 10 }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        const qr = data.merchants?.[0]?.pops?.[0]?.gopay?.aspi_qr_string;
+        if (qr && qr.startsWith('00020101')) {
+          return qr;
+        }
+      }
+    } catch {}
+
+    // Fallback: Portal HTML scraping
     try {
       const response = await fetch(`${this.PORTAL_URL}/id/dashboard`, {
         headers: {
