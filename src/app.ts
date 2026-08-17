@@ -13,6 +13,7 @@ import { transactionsRouter } from './modules/transactions/transactions.routes.j
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { dashboardTransactionsRouter } from './modules/transactions/dashboard-transactions.routes.js';
 import { requireApiKey } from './middleware/api-key.middleware.js';
+import { openApiSpec } from './openapi.js';
 import type { AppEnv } from './types/hono.js';
 
 export const app = new Hono<AppEnv>();
@@ -53,6 +54,11 @@ app.get('/health', (c) => {
       'NeetPay API Gateway is operational'
     )
   );
+});
+
+// OpenAPI 3.1.0 Specification Endpoint
+app.get('/openapi.json', (c) => {
+  return c.json(openApiSpec);
 });
 
 // Dashboard Management Routes

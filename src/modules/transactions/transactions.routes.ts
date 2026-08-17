@@ -7,7 +7,7 @@ import type { AppEnv } from '../../types/hono.js';
 
 export const transactionsRouter = new Hono<AppEnv>();
 
-const createTransactionSchema = z.object({
+export const createTransactionSchema = z.object({
   orderId: z.string().min(1, 'orderId is required').max(100, 'orderId is too long'),
   amount: z.number().positive('amount must be a positive number').min(1000, 'Minimum amount is Rp 1.000'),
   paymentAccountId: z.string().optional(),
@@ -105,17 +105,19 @@ transactionsRouter.get('/:id', requireApiKey, async (c) => {
       merchantUser.id,
       identifier
     );
-    return c.json(successResponse(transaction, 'Transaction details retrieved'));
+    return c.json(
+      successResponse(transaction, 'Transaction details retrieved')
+    );
   } catch (err: any) {
     if (err.message === 'TRANSACTION_NOT_FOUND') {
       return c.json(
-        errorResponse('TRANSACTION_NOT_FOUND', 'Transaction not found.'),
+        errorResponse('TRANSACTION_NOT_FOUND', 'Transaction not found with the provided identifier.'),
         404
       );
     }
     return c.json(
       errorResponse('GET_TRANSACTION_FAILED', err.message || 'Failed to retrieve transaction'),
-      400
+      500
     );
   }
 });
