@@ -6,6 +6,7 @@ import { logger } from './lib/logger.js';
 serve({
   fetch: app.fetch,
   port: env.PORT,
+  hostname: '127.0.0.1',
 }, (info) => {
   logger.info({ port: info.port, env: env.NODE_ENV }, `🚀 NeetPay API Server running at http://localhost:${info.port}`);
 });
