@@ -75,6 +75,16 @@ enum WebhookStatus {
   FAILED
 }
 
+enum GoBizAuthType {
+  OTP
+  PASSWORD
+}
+
+enum GoBizTokenType {
+  ACCESS
+  REFRESH
+}
+
 // -----------------------------------------------------------------------------
 // 1. AUTHENTICATION & USERS (Non-Custodial: No Balance / No Saldo)
 // -----------------------------------------------------------------------------
@@ -92,7 +102,7 @@ model User {
   // Relationships
   sessions          AuthSession[]
   apiCredential     ApiCredential?
-  webhookConfigs    WebhookConfig[]
+  webhookConfig     WebhookConfig?
   subscriptions     Subscription[]
   monthlyUsages     MonthlyUsage[]
   paymentAccounts   PaymentAccount[]
@@ -139,11 +149,11 @@ model ApiCredential {
 
 model WebhookConfig {
   id        String   @id @default(cuid())
-  userId    String
+  userId    String   @unique
   url       String
   secretKey String
   isEnabled Boolean  @default(true)
-  events    String[] @default(["TRANSACTION_PAID", "TRANSACTION_EXPIRED", "TRANSACTION_FAILED"])
+  events    String[] @default(["transaction.paid", "transaction.expired"])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -296,24 +306,49 @@ model PaymentAccount {
 }
 
 model GoBizAccount {
-  id                    String    @id @default(cuid())
-  paymentAccountId      String    @unique
+  id                    String        @id @default(cuid())
+  paymentAccountId      String        @unique
+  authType              GoBizAuthType @default(OTP)
   merchantId            String
   outletId              String
   merchantName          String?
   outletName            String?
   loginIdentifier       String
-  credentialEncrypted   String    @db.Text
+  credentialEncrypted   String        @db.Text
+  encryptedPassword     String?       @db.Text
   credentialExpiresAt   DateTime?
-  qrString              String?   @db.Text
+  qrString              String?       @db.Text
   qrUpdatedAt           DateTime?
   lastConnectionCheckAt DateTime?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
-  paymentAccount PaymentAccount @relation(fields: [paymentAccountId], references: [id], onDelete: Cascade)
+  paymentAccount  PaymentAccount        @relation(fields: [paymentAccountId], references: [id], onDelete: Cascade)
+  tokenLifecycles GoBizTokenLifecycle[]
 
   @@map("gobiz_accounts")
+}
+
+model GoBizTokenLifecycle {
+  id               String         @id @default(cuid())
+  goBizAccountId   String
+  tokenType        GoBizTokenType
+  tokenFingerprint String
+  issuedAt         DateTime       @default(now())
+  lastSuccessAt    DateTime?
+  lastAttemptAt    DateTime?
+  failedAt         DateTime?
+  replacedAt       DateTime?
+  failureCode      String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  goBizAccount GoBizAccount @relation(fields: [goBizAccountId], references: [id], onDelete: Cascade)
+
+  @@index([goBizAccountId])
+  @@index([tokenType])
+  @@index([tokenFingerprint])
+  @@map("gobiz_token_lifecycles")
 }
 
 model PaymentFeeRule {
@@ -400,7 +435,7 @@ model ProviderEvent {
   paymentAccountId String?
   rawPayload       Json
   eventType        String
-  providerRefId    String?
+  providerRefId    String
   isProcessed      Boolean   @default(false)
   processedAt      DateTime?
   createdAt        DateTime  @default(now())
@@ -408,6 +443,7 @@ model ProviderEvent {
   provider       PaymentProvider @relation(fields: [providerId], references: [id])
   paymentAccount PaymentAccount? @relation(fields: [paymentAccountId], references: [id])
 
+  @@unique([providerId, providerRefId])
   @@index([providerId])
   @@index([providerRefId])
   @@index([isProcessed])
@@ -435,6 +471,7 @@ model WebhookDelivery {
   transaction Transaction?     @relation(fields: [transactionId], references: [id], onDelete: SetNull)
   attempts    WebhookAttempt[]
 
+  @@unique([transactionId, event])
   @@index([userId])
   @@index([status])
   @@index([nextRetryAt])

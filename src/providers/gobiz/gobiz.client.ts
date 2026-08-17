@@ -7,13 +7,6 @@ export interface GoBizTokenInfo {
   expiresIn?: number;
 }
 
-export interface GoBizOtpRequestResult {
-  otpToken: string;
-  otpExpiresIn: number;
-  otpLength: number;
-  uniqueId: string;
-}
-
 export interface GoBizMerchantProfile {
   merchantId: string;
   outletName: string;
@@ -26,95 +19,100 @@ export interface GoBizMerchantProfile {
   rawMerchant?: any;
 }
 
-export class GoBizClient {
-  private static readonly BASE_URL = 'https://api.gobiz.co.id';
-  private static readonly PORTAL_URL = 'https://portal.gofoodmerchant.co.id';
+export interface GoBizJournalItem {
+  id: string; // Journal ID / External Mutation ID (providerRefId)
+  transactionId?: string;
+  amount: number; // Gross nominal in IDR
+  type: 'CREDIT' | 'DEBIT';
+  paymentMethod?: string;
+  status?: string;
+  createdAt: Date; // metadata.transaction.transaction_time
+  customerName?: string;
+  rawJournal?: any;
+}
 
-  private static getHeaders(uniqueId?: string): Record<string, string> {
+export class GoBizClient {
+  private static BASE_URL = 'https://api.gobiz.co.id';
+  private static PORTAL_URL = 'https://portal.gofoodmerchant.co.id';
+
+  private static getHeaders(extraHeaders: Record<string, string> = {}) {
     return {
-      'Accept': 'application/json, text/plain, */*',
       'Content-Type': 'application/json',
+      'Accept': 'application/json, text/plain, */*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       'X-Appid': 'go-biz-web-dashboard',
       'X-Appversion': 'platform-v3.98.1-bf97ae9c',
-      'X-Deviceos': 'Web',
-      'X-Phonemake': 'Windows 10 64-bit',
-      'X-Phonemodel': 'Chrome/120.0.0.0',
+      'X-Deviceos': 'web',
       'X-Platform': 'Web',
-      'X-User-Locale': 'en-US',
       'X-User-Type': 'merchant',
-      'Gojek-Country-Code': 'ID',
-      'Gojek-Timezone': 'Asia/Jakarta',
-      'Authentication-Type': 'go-id',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'X-Uniqueid': uniqueId || crypto.randomUUID(),
+      'X-Uniqueid': crypto.randomUUID(),
+      ...extraHeaders,
     };
   }
 
   /**
-   * Request OTP via SMS to registered GoBiz phone number
+   * Request 4-digit SMS OTP from GoBiz
    */
-  static async requestOtp(phoneNumber: string): Promise<GoBizOtpRequestResult> {
-    const uniqueId = crypto.randomUUID();
+  static async requestOtp(phoneNumber: string): Promise<{ otpToken: string; uniqueId: string }> {
+    let cleanPhone = phoneNumber.trim().replace(/^0/, '62').replace(/^\+/, '');
+    if (!cleanPhone.startsWith('62')) {
+      cleanPhone = `62${cleanPhone}`;
+    }
 
-    // Normalize phone number (remove +62, 62, 0, spaces)
-    let phone = phoneNumber.replace(/[\s+-]/g, '');
-    if (phone.startsWith('62')) phone = phone.slice(2);
-    else if (phone.startsWith('0')) phone = phone.slice(1);
-
-    const headers = this.getHeaders(uniqueId);
-
-    const response = await fetch(`${this.BASE_URL}/goid/login/request`, {
+    const headers = this.getHeaders();
+    const response = await fetch(`${this.BASE_URL}/goid/otp/request`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         client_id: 'go-biz-web-new',
-        phone_number: phone,
-        country_code: '62',
+        phone_number: cleanPhone,
+        country_code: 'ID',
       }),
     });
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`GoBiz OTP Request Failed: ${response.status} ${text}`);
+      let errorMsg = `GoBiz OTP Request Failed: ${response.status}`;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed.errors?.[0]?.message) {
+          errorMsg = parsed.errors[0].message;
+        }
+      } catch {}
+      throw new Error(errorMsg);
     }
 
-    const result = (await response.json()) as any;
+    const data = (await response.json()) as any;
+    const otpToken = data.otp_token || data.data?.otp_token;
+    const uniqueId = data.unique_id || data.data?.unique_id || crypto.randomUUID();
 
-    if (!result.success || !result.data?.otp_token) {
-      const msg = result.errors?.[0]?.message || 'Failed to request OTP from GoBiz';
-      throw new Error(msg);
+    if (!otpToken) {
+      throw new Error('GoBiz did not return otp_token');
     }
 
-    return {
-      otpToken: result.data.otp_token,
-      otpExpiresIn: result.data.otp_expires_in || 720,
-      otpLength: result.data.otp_length || 4,
-      uniqueId, // Paired UUID for verifyOTP
-    };
+    return { otpToken, uniqueId };
   }
 
   /**
-   * Verify OTP and obtain access_token and refresh_token
+   * Verify 4-digit SMS OTP and receive initial Access & Refresh Tokens
    */
   static async verifyOtp(otpToken: string, otp: string, uniqueId: string): Promise<GoBizTokenInfo> {
-    const headers = this.getHeaders(uniqueId);
-
+    const headers = this.getHeaders();
     const response = await fetch(`${this.BASE_URL}/goid/token`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         client_id: 'go-biz-web-new',
         grant_type: 'otp',
-        data: {
-          otp: otp.trim(),
-          otp_token: otpToken.trim(),
-        },
+        otp,
+        otp_token: otpToken,
+        unique_id: uniqueId,
       }),
     });
 
     if (!response.ok) {
       const text = await response.text();
-      let errorMsg = `GoBiz OTP Verify Failed: ${response.status}`;
+      let errorMsg = `GoBiz OTP Verification Failed: ${response.status}`;
       try {
         const parsed = JSON.parse(text);
         if (parsed.errors?.[0]?.message) {
@@ -127,7 +125,7 @@ export class GoBizClient {
     const data = (await response.json()) as any;
 
     if (!data.access_token) {
-      throw new Error('OTP verified but no access_token returned by GoBiz');
+      throw new Error('GoBiz did not return access_token');
     }
 
     return {
@@ -139,13 +137,12 @@ export class GoBizClient {
   }
 
   /**
-   * Login directly with GoBiz registered Email & Password
+   * Direct Login using GoBiz Email & Password (2-Step OAuth Flow)
    */
   static async loginWithPassword(email: string, password: string): Promise<GoBizTokenInfo> {
-    const uniqueId = crypto.randomUUID();
-    const headers = this.getHeaders(uniqueId);
+    const headers = this.getHeaders();
 
-    // Step 1: Initiate Password Login
+    // Step 1: Login Request
     const step1Res = await fetch(`${this.BASE_URL}/goid/login/request`, {
       method: 'POST',
       headers,
@@ -158,10 +155,28 @@ export class GoBizClient {
 
     if (!step1Res.ok) {
       const text = await step1Res.text();
-      throw new Error(`GoBiz Login Step 1 Failed: ${step1Res.status} ${text}`);
+      let errorMsg = `GoBiz Login Failed: ${step1Res.status}`;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed.errors?.[0]?.message) {
+          errorMsg = parsed.errors[0].message;
+        }
+      } catch {}
+      throw new Error(errorMsg);
     }
 
-    // Step 2: Request Token
+    const step1Data = (await step1Res.json()) as any;
+
+    if (step1Data.access_token) {
+      return {
+        accessToken: step1Data.access_token,
+        refreshToken: step1Data.refresh_token || '',
+        tokenType: step1Data.token_type,
+        expiresIn: step1Data.expires_in,
+      };
+    }
+
+    // Step 2: Request token via password grant
     const step2Res = await fetch(`${this.BASE_URL}/goid/token`, {
       method: 'POST',
       headers,
@@ -270,6 +285,132 @@ export class GoBizClient {
       accountName: m.bank_account?.account_name,
       rawMerchant: m,
     };
+  }
+
+  /**
+   * Fetch recent credit mutations from GoBiz (Endpoint: POST https://api.gobiz.co.id/journals/search)
+   */
+  static async fetchJournals(
+    accessToken: string,
+    merchantId: string,
+    options?: { startTime?: Date; endTime?: Date; pageSize?: number }
+  ): Promise<GoBizJournalItem[]> {
+    const startTime = options?.startTime || new Date(Date.now() - 3600000);
+    const endTime = options?.endTime || new Date();
+
+    const payload = {
+      from: 0,
+      size: options?.pageSize || 50,
+      sort: { time: { order: 'desc' } },
+      included_categories: { incoming: ['transaction_share', 'action'] },
+      query: [
+        {
+          op: 'and',
+          clauses: [
+            {
+              field: 'metadata.transaction.status',
+              op: 'in',
+              value: ['settlement', 'capture'],
+            },
+            {
+              field: 'metadata.transaction.transaction_time',
+              op: 'gte',
+              value: startTime.toISOString(),
+            },
+            {
+              field: 'metadata.transaction.transaction_time',
+              op: 'lte',
+              value: endTime.toISOString(),
+            },
+            ...(merchantId
+              ? [
+                  {
+                    field: 'metadata.transaction.merchant_id',
+                    op: 'equal',
+                    value: merchantId,
+                  },
+                ]
+              : []),
+          ],
+        },
+      ],
+    };
+
+    const response = await fetch(`${this.BASE_URL}/journals/search`, {
+      method: 'POST',
+      headers: {
+        'Host': 'api.gobiz.co.id',
+        'Accept': 'application/json, text/plain, */*, application/vnd.journal.v1+json',
+        'Content-Type': 'application/json; charset=utf-8',
+        'authentication-type': 'go-id',
+        'Origin': 'https://portal.gofoodmerchant.co.id',
+        'Referer': 'https://portal.gofoodmerchant.co.id/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`GoBiz Journals Search Failed: ${response.status} ${text}`);
+    }
+
+    const data = (await response.json()) as any;
+    const hits = data.hits || [];
+
+    return (Array.isArray(hits) ? hits : [])
+      .map((hit: any) => {
+        const tx = hit.metadata?.transaction || {};
+
+        // Explicit Minor Unit Normalization:
+        // GoBiz metadata.transaction.gross_amount is defined in minor units (cents)
+        // e.g. 5003700 -> Rp 50.037 (gross_amount / 100)
+        let normalizedAmount = 0;
+        if (typeof tx.gross_amount === 'number' && tx.gross_amount > 0) {
+          normalizedAmount = tx.gross_amount / 100;
+        } else if (typeof hit.amount === 'number' && hit.amount > 0) {
+          normalizedAmount = hit.amount;
+        }
+
+        // External Mutation / Journal ID
+        const externalId = String(hit.id || tx.id || tx.order_ref_id || tx.transaction_id || crypto.randomUUID());
+
+        // Timestamp: metadata.transaction.transaction_time
+        const txTime = tx.transaction_time || hit.time || hit.created_at || new Date().toISOString();
+        const paymentType = tx.payment_type ? String(tx.payment_type).toUpperCase() : (tx.payment_method ? String(tx.payment_method).toUpperCase() : '');
+        const rawStatus = (tx.status || hit.status || '').toUpperCase();
+
+        return {
+          id: externalId,
+          transactionId: tx.order_ref_id || tx.id || tx.transaction_id || undefined,
+          amount: normalizedAmount,
+          type: 'CREDIT' as const,
+          paymentMethod: paymentType,
+          status: rawStatus,
+          createdAt: new Date(txTime),
+          customerName: tx.customer_name || 'Guest',
+          rawJournal: {
+            hitId: hit.id,
+            orderRefId: tx.order_ref_id || null,
+            transactionId: tx.id || null,
+            grossAmount: tx.gross_amount ?? hit.amount ?? null,
+            normalizedAmount,
+            transactionTime: txTime,
+            status: tx.status || hit.status || null,
+            paymentType: tx.payment_type || null,
+          },
+        };
+      })
+      .filter((item) => {
+        // Strict Eligibility Filter:
+        // 1. Must be QRIS
+        // 2. Must be settled / captured / success
+        // 3. Amount > 0
+        const isQris = item.paymentMethod === 'QRIS';
+        const isSuccess = ['SETTLEMENT', 'CAPTURE', 'SUCCESS'].includes(item.status);
+        return isQris && isSuccess && item.amount > 0;
+      });
   }
 
   /**

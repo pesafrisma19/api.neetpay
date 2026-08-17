@@ -61,7 +61,7 @@ paymentAccountsRouter.post('/gobiz/request-otp', requireAuth, async (c) => {
 });
 
 /**
- * Verify OTP and Connect GoBiz Account
+ * Verify OTP and Connect GoBiz Account (authType: OTP)
  * POST /api/payment-accounts/gobiz/verify-otp
  */
 paymentAccountsRouter.post('/gobiz/verify-otp', requireAuth, async (c) => {
@@ -78,7 +78,7 @@ paymentAccountsRouter.post('/gobiz/verify-otp', requireAuth, async (c) => {
 
   try {
     const account = await PaymentAccountService.verifyOtpAndConnect(user.id, parsed.data);
-    return c.json(successResponse(account, 'GoBiz account connected successfully!'), 201);
+    return c.json(successResponse(account, 'GoBiz account connected successfully via OTP!'), 201);
   } catch (err: any) {
     if (err.message === 'ACCOUNT_LIMIT_EXCEEDED') {
       return c.json(
@@ -91,7 +91,7 @@ paymentAccountsRouter.post('/gobiz/verify-otp', requireAuth, async (c) => {
 });
 
 /**
- * Direct Connect GoBiz using Email & Password
+ * Direct Connect GoBiz using Email & Password (authType: PASSWORD)
  * POST /api/payment-accounts/gobiz/connect-password
  */
 paymentAccountsRouter.post('/gobiz/connect-password', requireAuth, async (c) => {
@@ -108,7 +108,17 @@ paymentAccountsRouter.post('/gobiz/connect-password', requireAuth, async (c) => 
 
   try {
     const account = await PaymentAccountService.connectWithPassword(user.id, parsed.data);
-    return c.json(successResponse(account, 'GoBiz account connected successfully via credentials!'), 201);
+    return c.json(
+      successResponse(
+        {
+          ...account,
+          disclosure:
+            'Password GoBiz disimpan dalam bentuk terenkripsi dan hanya digunakan untuk menghubungkan ulang akun GoBiz secara otomatis jika access token dan refresh token tidak dapat digunakan.',
+        },
+        'GoBiz account connected successfully via credentials!'
+      ),
+      201
+    );
   } catch (err: any) {
     if (err.message === 'ACCOUNT_LIMIT_EXCEEDED') {
       return c.json(
@@ -121,13 +131,71 @@ paymentAccountsRouter.post('/gobiz/connect-password', requireAuth, async (c) => 
 });
 
 /**
- * List Connected Payment Accounts
+ * List Connected Payment Accounts (Sanitized, includes token lifecycle metadata)
  * GET /api/payment-accounts
  */
 paymentAccountsRouter.get('/', requireAuth, async (c) => {
   const user = c.get('user');
   const accounts = await PaymentAccountService.listAccounts(user.id);
   return c.json(successResponse(accounts, 'Payment accounts retrieved'));
+});
+
+/**
+ * Get Single Payment Account Details
+ * GET /api/payment-accounts/:id
+ */
+paymentAccountsRouter.get('/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  const accountId = c.req.param('id');
+
+  try {
+    const account = await PaymentAccountService.getAccount(user.id, accountId);
+    return c.json(successResponse(account, 'Payment account retrieved'));
+  } catch (err: any) {
+    if (err.message === 'ACCOUNT_NOT_FOUND') {
+      return c.json(errorResponse('ACCOUNT_NOT_FOUND', 'Payment account not found.'), 404);
+    }
+    throw err;
+  }
+});
+
+/**
+ * Update Payment Account Settings (Name, Limits, Fee Rule)
+ * PATCH /api/payment-accounts/:id
+ */
+paymentAccountsRouter.patch('/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  const accountId = c.req.param('id');
+  const body = await c.req.json();
+
+  try {
+    const account = await PaymentAccountService.updateAccount(user.id, accountId, body);
+    return c.json(successResponse(account, 'Payment account updated successfully'));
+  } catch (err: any) {
+    if (err.message === 'ACCOUNT_NOT_FOUND') {
+      return c.json(errorResponse('ACCOUNT_NOT_FOUND', 'Payment account not found.'), 404);
+    }
+    return c.json(errorResponse('UPDATE_ACCOUNT_FAILED', err.message || 'Failed to update account'), 400);
+  }
+});
+
+/**
+ * Resync QRIS for Payment Account
+ * POST /api/payment-accounts/:id/resync-qris
+ */
+paymentAccountsRouter.post('/:id/resync-qris', requireAuth, async (c) => {
+  const user = c.get('user');
+  const accountId = c.req.param('id');
+
+  try {
+    const result = await PaymentAccountService.resyncQris(user.id, accountId);
+    return c.json(successResponse(result, 'QRIS resynced successfully'));
+  } catch (err: any) {
+    if (err.message === 'ACCOUNT_NOT_FOUND') {
+      return c.json(errorResponse('ACCOUNT_NOT_FOUND', 'Payment account not found.'), 404);
+    }
+    return c.json(errorResponse('RESYNC_QRIS_FAILED', err.message || 'Failed to resync QRIS'), 400);
+  }
 });
 
 /**

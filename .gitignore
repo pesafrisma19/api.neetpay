@@ -2,7 +2,14 @@ node_modules/
 dist/
 .env
 .env.local
+.env.*.local
+!.env.example
 *.log
 .DS_Store
+Thumbs.db
 dev-db/
 prisma/dev-db/
+tmp/
+temp/
+scratch-*
+*.tsbuildinfo

@@ -5,16 +5,21 @@
   "type": "module",
   "scripts": {
     "dev:api": "tsx watch src/index.ts",
-    "dev:worker": "tsx watch src/worker/payment.worker.ts",
+    "dev:worker": "tsx watch src/worker.ts",
     "build": "tsc",
     "start:api": "node dist/index.js",
-    "start:worker": "node dist/worker/payment.worker.js",
+    "start:worker": "node dist/worker.js",
     "prisma:generate": "prisma generate",
     "prisma:validate": "prisma validate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx src/lib/seed.ts",
     "seed:admin": "tsx src/lib/seed-admin.ts",
     "test:auth": "tsx src/test-auth-runtime.ts",
+    "test:lifecycle": "tsx src/test-gobiz-lifecycle.ts",
+    "test:transactions": "tsx src/test-transactions-api.ts",
+    "test:worker": "tsx src/test-payment-worker.ts",
+    "test:webhook": "tsx src/test-webhook.ts",
+    "test:all": "tsx src/test-auth-runtime.ts && tsx src/test-gobiz-lifecycle.ts && tsx src/test-transactions-api.ts && tsx src/test-payment-worker.ts && tsx src/test-webhook.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import { prisma } from '../../lib/prisma.js';
-import { encryptAES, decryptAES } from '../../lib/encryption.js';
+import { encryptAES } from '../../lib/encryption.js';
 import { GoBizClient, type GoBizTokenInfo } from '../../providers/gobiz/gobiz.client.js';
+import { GoBizLifecycleTracker } from '../../providers/gobiz/gobiz.lifecycle.js';
 
 export interface ConnectWithOtpInput {
   otpToken: string;
@@ -22,31 +23,6 @@ export interface ConnectWithPasswordInput {
 }
 
 export class PaymentAccountService {
-  /**
-   * Helper to parse or calculate token expiry Date
-   * Priority: 1. expiresIn seconds -> 2. JWT payload exp -> 3. Standard GoBiz 30 days default
-   */
-  static calculateTokenExpiry(accessToken: string, expiresIn?: number): Date {
-    if (expiresIn && typeof expiresIn === 'number' && expiresIn > 0) {
-      return new Date(Date.now() + expiresIn * 1000);
-    }
-
-    try {
-      const parts = accessToken.split('.');
-      if (parts.length === 3) {
-        const payloadJson = Buffer.from(parts[1], 'base64').toString('utf8');
-        const payload = JSON.parse(payloadJson);
-        if (payload.exp && typeof payload.exp === 'number') {
-          return new Date(payload.exp * 1000);
-        }
-      }
-    } catch {}
-
-    // Standard GoBiz session validity is 30 days
-    const DEFAULT_GOBIZ_TOKEN_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
-    return new Date(Date.now() + DEFAULT_GOBIZ_TOKEN_LIFETIME_MS);
-  }
-
   /**
    * Helper to verify if user has available payment account quota in their active plan
    */
@@ -88,7 +64,7 @@ export class PaymentAccountService {
   }
 
   /**
-   * Step 2: Verify OTP and save connected GoBiz account (with automatic QRIS extraction)
+   * Step 2: Verify OTP and save connected GoBiz account (authType: OTP)
    */
   static async verifyOtpAndConnect(userId: string, input: ConnectWithOtpInput) {
     await this.verifyAccountLimit(userId);
@@ -105,9 +81,11 @@ export class PaymentAccountService {
       qrString = await GoBizClient.fetchQrisStringFromPortal(tokens.accessToken);
     }
 
-    // 4. Save Connected Account
+    // 4. Save Connected Account with authType = OTP
     return await this.saveConnectedAccount(userId, tokens, profile, {
       accountName: input.accountName || profile.outletName,
+      authType: 'OTP',
+      loginIdentifier: profile.phone || '',
       customMinAmount: input.customMinAmount,
       customMaxAmount: input.customMaxAmount,
       qrString: qrString || undefined,
@@ -115,7 +93,7 @@ export class PaymentAccountService {
   }
 
   /**
-   * Direct connect using GoBiz email & password
+   * Direct connect using GoBiz email & password (authType: PASSWORD)
    */
   static async connectWithPassword(userId: string, input: ConnectWithPasswordInput) {
     await this.verifyAccountLimit(userId);
@@ -128,8 +106,14 @@ export class PaymentAccountService {
       qrString = await GoBizClient.fetchQrisStringFromPortal(tokens.accessToken);
     }
 
+    // For PASSWORD accounts, password is encrypted with AES-256-GCM for automatic recovery fallback
+    const encryptedPassword = encryptAES(input.password);
+
     return await this.saveConnectedAccount(userId, tokens, profile, {
       accountName: input.accountName || profile.outletName,
+      authType: 'PASSWORD',
+      loginIdentifier: input.email.trim().toLowerCase(),
+      encryptedPassword,
       customMinAmount: input.customMinAmount,
       customMaxAmount: input.customMaxAmount,
       qrString: qrString || undefined,
@@ -137,7 +121,7 @@ export class PaymentAccountService {
   }
 
   /**
-   * Helper to persist PaymentAccount + GoBizAccount with AES-256-GCM encryption & QRIS
+   * Helper to persist PaymentAccount + GoBizAccount with AES-256-GCM encryption & Token Lifecycle
    */
   private static async saveConnectedAccount(
     userId: string,
@@ -145,6 +129,9 @@ export class PaymentAccountService {
     profile: any,
     options: {
       accountName: string;
+      authType: 'OTP' | 'PASSWORD';
+      loginIdentifier: string;
+      encryptedPassword?: string;
       customMinAmount?: number;
       customMaxAmount?: number;
       qrString?: string;
@@ -167,10 +154,7 @@ export class PaymentAccountService {
       })
     );
 
-    // Calculate token expiration timestamp
-    const credentialExpiresAt = this.calculateTokenExpiry(tokens.accessToken, tokens.expiresIn);
-
-    // Create PaymentAccount and GoBizAccount in atomic transaction
+    // Create PaymentAccount, GoBizAccount, and Initial Token Lifecycles in atomic transaction
     const paymentAccount = await prisma.$transaction(async (tx) => {
       const account = await tx.paymentAccount.create({
         data: {
@@ -185,21 +169,31 @@ export class PaymentAccountService {
         },
       });
 
-      await tx.goBizAccount.create({
+      const goBizAccount = await tx.goBizAccount.create({
         data: {
           paymentAccountId: account.id,
+          authType: options.authType,
           merchantId: profile.merchantId,
           outletId: profile.merchantId, // GoBiz main outlet ID
           merchantName: profile.outletName,
           outletName: profile.outletName,
-          loginIdentifier: profile.phone || '',
+          loginIdentifier: options.loginIdentifier,
           credentialEncrypted,
-          credentialExpiresAt,
+          encryptedPassword: options.encryptedPassword || null,
+          credentialExpiresAt: null, // No assumed expiry
           qrString: options.qrString || null,
           qrUpdatedAt: options.qrString ? new Date() : null,
           lastConnectionCheckAt: new Date(),
         },
       });
+
+      // Record Initial ACCESS & REFRESH token lifecycles
+      await GoBizLifecycleTracker.recordInitialTokens(
+        tx,
+        goBizAccount.id,
+        tokens.accessToken,
+        tokens.refreshToken
+      );
 
       return account;
     });
@@ -209,67 +203,18 @@ export class PaymentAccountService {
       name: paymentAccount.name,
       status: paymentAccount.status,
       provider: 'GOBIZ',
+      authType: options.authType,
       merchantId: profile.merchantId,
       outletName: profile.outletName,
       customMinAmount: paymentAccount.customMinAmount,
       customMaxAmount: paymentAccount.customMaxAmount,
       hasQrString: !!options.qrString,
-      credentialExpiresAt,
       createdAt: paymentAccount.createdAt,
     };
   }
 
   /**
-   * Ensure fresh and valid access_token for GoBiz API calls.
-   * If token is expired or within 24 hours of expiry, auto-refresh via refresh_token.
-   */
-  static async ensureValidToken(paymentAccountId: string): Promise<string> {
-    const goBizAccount = await prisma.goBizAccount.findUnique({
-      where: { paymentAccountId },
-    });
-
-    if (!goBizAccount) {
-      throw new Error('GOBIZ_ACCOUNT_NOT_FOUND');
-    }
-
-    const decrypted = JSON.parse(decryptAES(goBizAccount.credentialEncrypted));
-    const isExpiringSoon =
-      goBizAccount.credentialExpiresAt &&
-      goBizAccount.credentialExpiresAt.getTime() - Date.now() < 24 * 60 * 60 * 1000; // < 24 hours
-
-    if (!isExpiringSoon || !decrypted.refreshToken) {
-      return decrypted.accessToken;
-    }
-
-    try {
-      // Auto-refresh token with GoBiz
-      const newTokens = await GoBizClient.refreshAccessToken(decrypted.refreshToken);
-      const newCredentialEncrypted = encryptAES(
-        JSON.stringify({
-          accessToken: newTokens.accessToken,
-          refreshToken: newTokens.refreshToken || decrypted.refreshToken,
-        })
-      );
-      const newExpiresAt = this.calculateTokenExpiry(newTokens.accessToken, newTokens.expiresIn);
-
-      await prisma.goBizAccount.update({
-        where: { paymentAccountId },
-        data: {
-          credentialEncrypted: newCredentialEncrypted,
-          credentialExpiresAt: newExpiresAt,
-          lastConnectionCheckAt: new Date(),
-        },
-      });
-
-      return newTokens.accessToken;
-    } catch {
-      // Fallback to existing token if refresh fails temporarily
-      return decrypted.accessToken;
-    }
-  }
-
-  /**
-   * List all payment accounts for a user
+   * List all payment accounts for a user (Sanitized: NO passwords, NO raw tokens)
    */
   static async listAccounts(userId: string) {
     const accounts = await prisma.paymentAccount.findMany({
@@ -283,14 +228,30 @@ export class PaymentAccountService {
         },
         goBizAccount: {
           select: {
+            id: true,
+            authType: true,
             merchantId: true,
             outletId: true,
             merchantName: true,
             outletName: true,
             qrString: true,
             qrUpdatedAt: true,
-            credentialExpiresAt: true,
             lastConnectionCheckAt: true,
+            createdAt: true,
+            tokenLifecycles: {
+              select: {
+                tokenType: true,
+                tokenFingerprint: true,
+                issuedAt: true,
+                lastSuccessAt: true,
+                lastAttemptAt: true,
+                failedAt: true,
+                replacedAt: true,
+                failureCode: true,
+              },
+              orderBy: { issuedAt: 'desc' },
+              take: 10,
+            },
           },
         },
       },
@@ -308,18 +269,193 @@ export class PaymentAccountService {
       lastSyncedAt: acc.lastSyncedAt,
       goBiz: acc.goBizAccount
         ? {
+            id: acc.goBizAccount.id,
+            authType: acc.goBizAccount.authType,
             merchantId: acc.goBizAccount.merchantId,
             outletId: acc.goBizAccount.outletId,
             merchantName: acc.goBizAccount.merchantName,
             outletName: acc.goBizAccount.outletName,
             hasQrString: !!acc.goBizAccount.qrString,
             qrUpdatedAt: acc.goBizAccount.qrUpdatedAt,
-            credentialExpiresAt: acc.goBizAccount.credentialExpiresAt,
             lastConnectionCheckAt: acc.goBizAccount.lastConnectionCheckAt,
+            connectedSince: acc.goBizAccount.createdAt,
+            tokenLifecycles: acc.goBizAccount.tokenLifecycles,
           }
         : null,
       createdAt: acc.createdAt,
     }));
+  }
+
+  /**
+   * Get single Payment Account details with GoBiz token lifecycles and fee rule
+   */
+  static async getAccount(userId: string, accountId: string) {
+    const acc = await prisma.paymentAccount.findFirst({
+      where: { id: accountId, userId },
+      include: {
+        provider: true,
+        goBizAccount: {
+          include: {
+            tokenLifecycles: {
+              orderBy: { issuedAt: 'desc' },
+              take: 20,
+            },
+          },
+        },
+      },
+    });
+
+    if (!acc) {
+      throw new Error('ACCOUNT_NOT_FOUND');
+    }
+
+    // Get user's fee rule for QRIS
+    const qrisMethod = await prisma.paymentMethod.findUnique({ where: { code: 'QRIS' } });
+    const feeRule = qrisMethod
+      ? await prisma.paymentFeeRule.findUnique({
+          where: {
+            userId_paymentMethodId: {
+              userId,
+              paymentMethodId: qrisMethod.id,
+            },
+          },
+        })
+      : null;
+
+    return {
+      id: acc.id,
+      name: acc.name,
+      status: acc.status,
+      isActive: acc.isActive,
+      provider: acc.provider.code,
+      providerName: acc.provider.name,
+      customMinAmount: acc.customMinAmount ? Number(acc.customMinAmount) : null,
+      customMaxAmount: acc.customMaxAmount ? Number(acc.customMaxAmount) : null,
+      lastSyncedAt: acc.lastSyncedAt,
+      feeRule: {
+        type: feeRule?.type || 'NONE',
+        value: feeRule?.value || 0,
+        isEnabled: feeRule?.isEnabled ?? true,
+      },
+      goBiz: acc.goBizAccount
+        ? {
+            id: acc.goBizAccount.id,
+            authType: acc.goBizAccount.authType,
+            merchantId: acc.goBizAccount.merchantId,
+            outletId: acc.goBizAccount.outletId,
+            merchantName: acc.goBizAccount.merchantName,
+            outletName: acc.goBizAccount.outletName,
+            loginIdentifierMasked: acc.goBizAccount.loginIdentifier
+              ? acc.goBizAccount.loginIdentifier.slice(0, 3) + '••••' + acc.goBizAccount.loginIdentifier.slice(-3)
+              : null,
+            hasQrString: !!acc.goBizAccount.qrString,
+            qrUpdatedAt: acc.goBizAccount.qrUpdatedAt,
+            lastConnectionCheckAt: acc.goBizAccount.lastConnectionCheckAt,
+            connectedSince: acc.goBizAccount.createdAt,
+            tokenLifecycles: acc.goBizAccount.tokenLifecycles.map((tl) => ({
+              id: tl.id,
+              tokenType: tl.tokenType,
+              tokenFingerprint: tl.tokenFingerprint,
+              issuedAt: tl.issuedAt,
+              lastSuccessAt: tl.lastSuccessAt,
+              lastAttemptAt: tl.lastAttemptAt,
+              failedAt: tl.failedAt,
+              replacedAt: tl.replacedAt,
+              failureCode: tl.failureCode,
+            })),
+          }
+        : null,
+      createdAt: acc.createdAt,
+      updatedAt: acc.updatedAt,
+    };
+  }
+
+  /**
+   * Update Payment Account settings (Name, Limits, Fee Rule)
+   */
+  static async updateAccount(
+    userId: string,
+    accountId: string,
+    data: {
+      name?: string;
+      customMinAmount?: number | null;
+      customMaxAmount?: number | null;
+      feeType?: 'NONE' | 'FLAT' | 'PERCENT';
+      feeValue?: number;
+    }
+  ) {
+    const account = await prisma.paymentAccount.findFirst({
+      where: { id: accountId, userId },
+    });
+
+    if (!account) {
+      throw new Error('ACCOUNT_NOT_FOUND');
+    }
+
+    const updated = await prisma.paymentAccount.update({
+      where: { id: accountId },
+      data: {
+        ...(data.name ? { name: data.name.trim() } : {}),
+        ...(data.customMinAmount !== undefined ? { customMinAmount: data.customMinAmount } : {}),
+        ...(data.customMaxAmount !== undefined ? { customMaxAmount: data.customMaxAmount } : {}),
+      },
+    });
+
+    // Update or upsert Fee Rule if feeType provided
+    if (data.feeType) {
+      const qrisMethod = await prisma.paymentMethod.findUnique({ where: { code: 'QRIS' } });
+      if (qrisMethod) {
+        await prisma.paymentFeeRule.upsert({
+          where: {
+            userId_paymentMethodId: {
+              userId,
+              paymentMethodId: qrisMethod.id,
+            },
+          },
+          update: {
+            type: data.feeType,
+            value: data.feeValue !== undefined ? Math.max(0, data.feeValue) : 0,
+            isEnabled: data.feeType !== 'NONE',
+          },
+          create: {
+            userId,
+            paymentMethodId: qrisMethod.id,
+            type: data.feeType,
+            value: data.feeValue !== undefined ? Math.max(0, data.feeValue) : 0,
+            isEnabled: data.feeType !== 'NONE',
+          },
+        });
+      }
+    }
+
+    return this.getAccount(userId, accountId);
+  }
+
+  /**
+   * Resync QRIS timestamp for Payment Account
+   */
+  static async resyncQris(userId: string, accountId: string) {
+    const account = await prisma.paymentAccount.findFirst({
+      where: { id: accountId, userId },
+      include: { goBizAccount: true },
+    });
+
+    if (!account || !account.goBizAccount) {
+      throw new Error('ACCOUNT_NOT_FOUND');
+    }
+
+    await prisma.goBizAccount.update({
+      where: { id: account.goBizAccount.id },
+      data: {
+        qrUpdatedAt: new Date(),
+        lastConnectionCheckAt: new Date(),
+      },
+    });
+
+    return {
+      synced: true,
+      qrUpdatedAt: new Date(),
+    };
   }
 
   /**

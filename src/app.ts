@@ -7,6 +7,10 @@ import { successResponse } from './lib/response.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { apiKeyRouter } from './modules/api-keys/api-keys.routes.js';
 import { paymentAccountsRouter } from './modules/payment-accounts/payment-accounts.routes.js';
+import { webhookRouter } from './modules/webhooks/webhook.routes.js';
+import { transactionsRouter } from './modules/transactions/transactions.routes.js';
+import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
+import { dashboardTransactionsRouter } from './modules/transactions/dashboard-transactions.routes.js';
 import { requireApiKey } from './middleware/api-key.middleware.js';
 import type { AppEnv } from './types/hono.js';
 
@@ -50,10 +54,16 @@ app.get('/health', (c) => {
   );
 });
 
-// Mount Routes
+// Dashboard Management Routes
 app.route('/api/auth', authRouter);
+app.route('/api/dashboard', dashboardRouter);
+app.route('/api/transactions', dashboardTransactionsRouter);
 app.route('/api/api-key', apiKeyRouter);
 app.route('/api/payment-accounts', paymentAccountsRouter);
+app.route('/api/webhook', webhookRouter);
+
+// Public Merchant Transactions API (https://api.neetpay.web.id/v1/transactions)
+app.route('/v1/transactions', transactionsRouter);
 
 // Forward /api/me to authRouter /me
 app.get('/api/me', (c) => authRouter.fetch(new Request(`${new URL(c.req.url).origin}/me`, c.req.raw)));
