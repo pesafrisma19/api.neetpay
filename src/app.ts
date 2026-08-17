@@ -8,6 +8,7 @@ import { authRouter } from './modules/auth/auth.routes.js';
 import { apiKeyRouter } from './modules/api-keys/api-keys.routes.js';
 import { paymentAccountsRouter } from './modules/payment-accounts/payment-accounts.routes.js';
 import { webhookRouter } from './modules/webhooks/webhook.routes.js';
+import { adminRouter } from './modules/admin/admin.routes.js';
 import { transactionsRouter } from './modules/transactions/transactions.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { dashboardTransactionsRouter } from './modules/transactions/dashboard-transactions.routes.js';
@@ -61,6 +62,7 @@ app.route('/api/transactions', dashboardTransactionsRouter);
 app.route('/api/api-key', apiKeyRouter);
 app.route('/api/payment-accounts', paymentAccountsRouter);
 app.route('/api/webhook', webhookRouter);
+app.route('/api/admin', adminRouter);
 
 // Public Merchant Transactions API (https://api.neetpay.web.id/v1/transactions)
 app.route('/v1/transactions', transactionsRouter);

@@ -1,15 +1,34 @@
+# Dependencies & Build
 node_modules/
 dist/
+build/
+
+# Environment Variables & Secrets (CRITICAL: Do NOT commit secrets)
 .env
-.env.local
-.env.*.local
+.env.*
+.env*.local
 !.env.example
+
+# Logs & Databases
 *.log
-.DS_Store
-Thumbs.db
+npm-debug.log*
+yarn-debug.log*
 dev-db/
 prisma/dev-db/
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary & Scratch
 tmp/
 temp/
+scratch/
 scratch-*
+**/scratch-*
+
+# System & Tooling
+.DS_Store
+Thumbs.db
 *.tsbuildinfo
+.vscode/
+.idea/
