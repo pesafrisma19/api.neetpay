@@ -285,6 +285,7 @@ model PaymentAccount {
   userId          String
   providerId      String
   name            String
+  useUniqueCode   Boolean       @default(true)
   customMinAmount Decimal?      @db.Decimal(18, 2)
   customMaxAmount Decimal?      @db.Decimal(18, 2)
   status          AccountStatus @default(ACTIVE)

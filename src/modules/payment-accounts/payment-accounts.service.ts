@@ -290,6 +290,7 @@ export class PaymentAccountService {
       id: acc.id,
       name: acc.name,
       status: acc.status,
+      useUniqueCode: acc.useUniqueCode,
       provider: acc.provider.code,
       providerName: acc.provider.name,
       customMinAmount: acc.customMinAmount,
@@ -355,6 +356,7 @@ export class PaymentAccountService {
       name: acc.name,
       status: acc.status,
       isActive: acc.isActive,
+      useUniqueCode: acc.useUniqueCode,
       provider: acc.provider.code,
       providerName: acc.provider.name,
       customMinAmount: acc.customMinAmount ? Number(acc.customMinAmount) : null,
@@ -399,13 +401,14 @@ export class PaymentAccountService {
   }
 
   /**
-   * Update Payment Account settings (Display Name, Limits, Fee Rule)
+   * Update Payment Account settings (Display Name, Limits, Fee Rule, Unique Code Toggle)
    */
   static async updateAccount(
     userId: string,
     accountId: string,
     data: {
       name?: string;
+      useUniqueCode?: boolean;
       customMinAmount?: number | null;
       customMaxAmount?: number | null;
       feeType?: 'NONE' | 'FLAT' | 'PERCENT';
@@ -429,6 +432,7 @@ export class PaymentAccountService {
       where: { id: accountId },
       data: {
         ...(trimmedName !== undefined ? { name: trimmedName } : {}),
+        ...(data.useUniqueCode !== undefined ? { useUniqueCode: data.useUniqueCode } : {}),
         ...(data.customMinAmount !== undefined ? { customMinAmount: data.customMinAmount } : {}),
         ...(data.customMaxAmount !== undefined ? { customMaxAmount: data.customMaxAmount } : {}),
       },

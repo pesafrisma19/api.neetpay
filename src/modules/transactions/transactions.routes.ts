@@ -11,7 +11,6 @@ export const createTransactionSchema = z.object({
   orderId: z.string().min(1, 'orderId is required').max(100, 'orderId is too long'),
   amount: z.number().positive('amount must be a positive number').min(1000, 'Minimum amount is Rp 1.000'),
   paymentAccountId: z.string().optional(),
-  useUniqueCode: z.boolean().optional().default(true),
   customerName: z.string().max(100).optional(),
   customerEmail: z.string().email().optional(),
   metadata: z.record(z.any()).optional(),
@@ -89,7 +88,7 @@ transactionsRouter.post('/', requireApiKey, async (c) => {
       return c.json(
         errorResponse(
           'DUPLICATE_PENDING_AMOUNT',
-          'An active pending transaction with the same payment amount already exists for this payment account. Please retry after payment is completed or expired, or enable useUniqueCode.'
+          'An active pending transaction with the same payment amount already exists for this payment account. Please retry after payment is completed or expired, or enable unique codes on the Payment Account.'
         ),
         409
       );

@@ -6,7 +6,6 @@ export interface CreateTransactionInput {
   orderId: string;
   amount: number;
   paymentAccountId?: string;
-  useUniqueCode?: boolean;
   customerName?: string;
   customerEmail?: string;
   metadata?: Record<string, any>;
@@ -195,7 +194,7 @@ export class TransactionService {
         const usedTotalAmounts = new Set(activePending.map((t) => Number(t.totalAmount)));
 
         const baseTotal = input.amount + feeAmount;
-        const useUniqueCode = input.useUniqueCode !== false; // default true if undefined
+        const useUniqueCode = paymentAccount.useUniqueCode;
 
         let uniqueCode = 0;
         let totalAmount = baseTotal;
