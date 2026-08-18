@@ -19,6 +19,7 @@ export function calculateCRC16(payload: string): string {
 
 /**
  * Convert Static GoBiz QRIS String into Dynamic EMVCo QRIS with exact payable Amount
+ * - Preserves all authentic merchant tags (00, 26, 51, 52, 53, 58, 59, 60, 61, 62, etc.)
  * - Replaces Tag 01 with "12" (Point of Initiation: Dynamic)
  * - Injects/Updates Tag 54 with exact amount string
  * - Recomputes Tag 63 (CRC16-CCITT) Checksum
@@ -52,7 +53,7 @@ export function generateDynamicQRIS(staticTemplate: string, totalAmount: number)
   const amountStr = String(Math.round(totalAmount));
   let amountTagFound = false;
 
-  // Transform Tag 01 to "12" (Dynamic) and Tag 54 to payable amount
+  // Transform Tag 01 to "12" (Dynamic), update Tag 54 if exists, and retain all other tags as-is
   const newTags = tags.map((t) => {
     if (t.id === '01') {
       return { id: '01', length: 2, value: '12' }; // Point of Initiation: 12 (Dynamic QR)

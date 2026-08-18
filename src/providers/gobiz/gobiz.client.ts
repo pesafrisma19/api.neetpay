@@ -33,7 +33,6 @@ export interface GoBizJournalItem {
 
 export class GoBizClient {
   private static BASE_URL = 'https://api.gobiz.co.id';
-  private static PORTAL_URL = 'https://portal.gofoodmerchant.co.id';
 
   /**
    * Verified GoBiz Web Dashboard Headers (Tested & active live format)
@@ -292,7 +291,7 @@ export class GoBizClient {
       'x-tencent': 'true',
     };
 
-    // Primary: /v1/merchants/search
+    // Primary: /v1/merchants/search (GoBiz Elasticsearch response with hits[])
     try {
       const searchRes = await fetch(`${this.BASE_URL}/v1/merchants/search`, {
         method: 'POST',
@@ -301,15 +300,15 @@ export class GoBizClient {
       });
       if (searchRes.ok) {
         const searchData = (await searchRes.json()) as any;
-        const m = searchData.merchants?.[0];
-        if (m) {
+        const hit = searchData.hits?.[0];
+        if (hit) {
           return {
-            merchantId: m.id || 'UNKNOWN_MERCHANT',
-            outletName: m.name || m.outlet_name || m.official_name || 'My GoBiz Store',
-            outletAddress: m.address || m.outlet_city || '',
-            phone: m.phone || '',
-            kycStatus: m.applications?.gopay?.kyc_approved || 'approved',
-            rawMerchant: m,
+            merchantId: hit.id || 'UNKNOWN_MERCHANT',
+            outletName: hit.name || hit.outlet_name || hit.official_name || 'My GoBiz Store',
+            outletAddress: hit.address || hit.outlet_city || '',
+            phone: hit.phone || '',
+            kycStatus: hit.applications?.gopay?.kyc_approved || 'approved',
+            rawMerchant: hit,
           };
         }
       }
@@ -463,7 +462,8 @@ export class GoBizClient {
   }
 
   /**
-   * Automatically fetch static QRIS string (aspi_qr_string) from GoBiz Merchant Portal / API
+   * Fetch complete static QRIS template (aspi_qr_string) from GoBiz API:
+   * Endpoint: POST https://api.gobiz.co.id/v1/merchants/search -> data.hits[0].pops[0].gopay.aspi_qr_string
    */
   static async fetchQrisStringFromPortal(accessToken: string): Promise<string | null> {
     const headers = {
@@ -471,50 +471,30 @@ export class GoBizClient {
       'authorization': `Bearer ${accessToken}`,
     };
 
-    // Primary: extract from /v1/merchants/search pops[0].gopay.aspi_qr_string
     try {
       const res = await fetch(`${this.BASE_URL}/v1/merchants/search`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ from: 0, to: 10 }),
       });
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        const qr = data.merchants?.[0]?.pops?.[0]?.gopay?.aspi_qr_string;
-        if (qr && qr.startsWith('00020101')) {
-          return qr;
-        }
-      }
-    } catch {}
 
-    // Fallback: Portal HTML scraping
-    try {
-      const response = await fetch(`${this.PORTAL_URL}/id/dashboard`, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Cookie': `access_token=${accessToken}; selected_country=ID; language=id`,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        },
-      });
-
-      if (!response.ok) return null;
-
-      const html = await response.text();
-
-      // Extract aspi_qr_string
-      const aspiMatch = html.match(/aspi_qr_string\\*"\s*:\s*\\*"([^\\"]+)/);
-      if (aspiMatch && aspiMatch[1]?.startsWith('00020101')) {
-        return aspiMatch[1];
+      if (!res.ok) {
+        const text = await res.text();
+        console.warn(`[GoBiz Client] /v1/merchants/search failed with status ${res.status}: ${text}`);
+        return null;
       }
 
-      // Fallback: search for EMVCo 00020101 pattern
-      const emvcoMatch = html.match(/(00020101[A-Za-z0-9\s\\,&_-]+?6304[A-Za-z0-9]{4})/);
-      if (emvcoMatch && emvcoMatch[1]) {
-        return emvcoMatch[1];
+      const data = (await res.json()) as any;
+      const qr = data.hits?.[0]?.pops?.[0]?.gopay?.aspi_qr_string;
+
+      if (!qr || typeof qr !== 'string' || !qr.startsWith('00020101') || !qr.includes('6304')) {
+        console.warn('[GoBiz Client] aspi_qr_string is missing or invalid in hits[0].pops[0].gopay');
+        return null;
       }
 
-      return null;
-    } catch {
+      return qr.trim();
+    } catch (err: any) {
+      console.warn('[GoBiz Client] Error fetching QRIS from /v1/merchants/search:', err.message);
       return null;
     }
   }
