@@ -6,6 +6,7 @@ export interface CreateTransactionInput {
   orderId: string;
   amount: number;
   paymentAccountId?: string;
+  useUniqueCode?: boolean;
   customerName?: string;
   customerEmail?: string;
   metadata?: Record<string, any>;
@@ -58,217 +59,237 @@ export class TransactionService {
     // Execute within Prisma interactive transaction with PostgreSQL row-level locks
     const result = await prisma.$transaction(
       async (tx) => {
-      // 1. Quota Concurrency Guard: Lock User Subscription Row in PostgreSQL
-      const lockedSubs: Array<{ id: string; planId: string; currentPeriodStart: Date; currentPeriodEnd: Date }> =
-        await tx.$queryRaw`
-          SELECT "id", "planId", "currentPeriodStart", "currentPeriodEnd"
-          FROM "subscriptions"
-          WHERE "userId" = ${userId} AND "status" = 'ACTIVE'
-          LIMIT 1
-          FOR UPDATE
-        `;
+        // 1. Quota Concurrency Guard: Lock User Subscription Row in PostgreSQL
+        const lockedSubs: Array<{ id: string; planId: string; currentPeriodStart: Date; currentPeriodEnd: Date }> =
+          await tx.$queryRaw`
+            SELECT "id", "planId", "currentPeriodStart", "currentPeriodEnd"
+            FROM "subscriptions"
+            WHERE "userId" = ${userId} AND "status" = 'ACTIVE'
+            LIMIT 1
+            FOR UPDATE
+          `;
 
-      if (!lockedSubs || lockedSubs.length === 0) {
-        throw new Error('SUBSCRIPTION_INACTIVE');
-      }
+        if (!lockedSubs || lockedSubs.length === 0) {
+          throw new Error('SUBSCRIPTION_INACTIVE');
+        }
 
-      const activeSub = lockedSubs[0];
+        const activeSub = lockedSubs[0];
 
-      const plan = await tx.plan.findUnique({
-        where: { id: activeSub.planId },
-      });
+        const plan = await tx.plan.findUnique({
+          where: { id: activeSub.planId },
+        });
 
-      if (!plan) {
-        throw new Error('SUBSCRIPTION_PLAN_NOT_FOUND');
-      }
+        if (!plan) {
+          throw new Error('SUBSCRIPTION_PLAN_NOT_FOUND');
+        }
 
-      // Check monthly quota under row lock
-      const monthlyLimit = plan.monthlyTransactionLimit; // null = unlimited (PRO), 30 = FREE
-      if (monthlyLimit !== null) {
-        const periodUsage = await tx.transaction.count({
+        // Check monthly quota under row lock
+        const monthlyLimit = plan.monthlyTransactionLimit; // null = unlimited (PRO), 30 = FREE
+        if (monthlyLimit !== null) {
+          const periodUsage = await tx.transaction.count({
+            where: {
+              userId,
+              createdAt: {
+                gte: activeSub.currentPeriodStart,
+                lte: activeSub.currentPeriodEnd,
+              },
+            },
+          });
+
+          if (periodUsage >= monthlyLimit) {
+            throw new Error('MONTHLY_LIMIT_EXCEEDED');
+          }
+        }
+
+        // 2. Resolve PaymentAccount & GoBizAccount
+        const paymentAccount = await tx.paymentAccount.findFirst({
           where: {
             userId,
-            createdAt: {
-              gte: activeSub.currentPeriodStart,
-              lte: activeSub.currentPeriodEnd,
+            isActive: true,
+            status: 'ACTIVE',
+            ...(input.paymentAccountId ? { id: input.paymentAccountId } : {}),
+          },
+          include: {
+            goBizAccount: true,
+            provider: true,
+          },
+        });
+
+        if (!paymentAccount) {
+          throw new Error('NO_ACTIVE_PAYMENT_ACCOUNT');
+        }
+
+        if (!paymentAccount.goBizAccount?.qrString) {
+          throw new Error('BASE_QRIS_NOT_FOUND');
+        }
+
+        // 3. Unique Total Amount & Collision Guard: Lock PaymentAccount row in PostgreSQL
+        // Serializes parallel requests for the same GoBiz payment account
+        await tx.$queryRaw`
+          SELECT "id" FROM "payment_accounts" WHERE "id" = ${paymentAccount.id} FOR UPDATE
+        `;
+
+        // 4. Validate Min & Max Limits
+        const minAmount = paymentAccount.customMinAmount
+          ? Number(paymentAccount.customMinAmount)
+          : 1000;
+        const maxAmount = paymentAccount.customMaxAmount
+          ? Number(paymentAccount.customMaxAmount)
+          : 10000000;
+
+        if (input.amount < minAmount || input.amount > maxAmount) {
+          throw new Error(
+            `AMOUNT_OUT_OF_RANGE: Minimum is Rp ${minAmount.toLocaleString('id-ID')} and maximum is Rp ${maxAmount.toLocaleString('id-ID')}`
+          );
+        }
+
+        // 5. Check Duplicate Active Order ID
+        const existingPending = await tx.transaction.findFirst({
+          where: {
+            userId,
+            merchantTradeNo: orderIdClean,
+            status: 'PENDING',
+          },
+        });
+
+        if (existingPending) {
+          throw new Error('DUPLICATE_PENDING_ORDER');
+        }
+
+        // 6. Resolve Payment Method & Calculate Fee
+        const qrisMethod = await tx.paymentMethod.findUnique({
+          where: { code: 'QRIS' },
+        });
+
+        if (!qrisMethod) {
+          throw new Error('PAYMENT_METHOD_NOT_FOUND');
+        }
+
+        const feeRule = await tx.paymentFeeRule.findUnique({
+          where: {
+            userId_paymentMethodId: {
+              userId,
+              paymentMethodId: qrisMethod.id,
             },
           },
         });
 
-        if (periodUsage >= monthlyLimit) {
-          throw new Error('MONTHLY_LIMIT_EXCEEDED');
-        }
-      }
+        const feeType = feeRule && feeRule.isEnabled ? feeRule.type : 'NONE';
+        const feeValue = feeRule && feeRule.isEnabled ? feeRule.value : 0;
+        const feeAmount = this.calculateFee(input.amount, feeType, feeValue);
 
-      // 2. Resolve PaymentAccount & GoBizAccount
-      const paymentAccount = await tx.paymentAccount.findFirst({
-        where: {
-          userId,
-          isActive: true,
-          status: 'ACTIVE',
-          ...(input.paymentAccountId ? { id: input.paymentAccountId } : {}),
-        },
-        include: {
-          goBizAccount: true,
-          provider: true,
-        },
-      });
-
-      if (!paymentAccount) {
-        throw new Error('NO_ACTIVE_PAYMENT_ACCOUNT');
-      }
-
-      if (!paymentAccount.goBizAccount?.qrString) {
-        throw new Error('BASE_QRIS_NOT_FOUND');
-      }
-
-      // 3. Unique Total Amount & Collision Guard: Lock PaymentAccount row in PostgreSQL
-      // Serializes parallel requests for the same GoBiz payment account
-      await tx.$queryRaw`
-        SELECT "id" FROM "payment_accounts" WHERE "id" = ${paymentAccount.id} FOR UPDATE
-      `;
-
-      // 4. Validate Min & Max Limits
-      const minAmount = paymentAccount.customMinAmount
-        ? Number(paymentAccount.customMinAmount)
-        : 1000;
-      const maxAmount = paymentAccount.customMaxAmount
-        ? Number(paymentAccount.customMaxAmount)
-        : 10000000;
-
-      if (input.amount < minAmount || input.amount > maxAmount) {
-        throw new Error(
-          `AMOUNT_OUT_OF_RANGE: Minimum is Rp ${minAmount.toLocaleString('id-ID')} and maximum is Rp ${maxAmount.toLocaleString('id-ID')}`
-        );
-      }
-
-      // 5. Check Duplicate Active Order ID
-      const existingPending = await tx.transaction.findFirst({
-        where: {
-          userId,
-          merchantTradeNo: orderIdClean,
-          status: 'PENDING',
-        },
-      });
-
-      if (existingPending) {
-        throw new Error('DUPLICATE_PENDING_ORDER');
-      }
-
-      // 6. Resolve Payment Method & Calculate Fee
-      const qrisMethod = await tx.paymentMethod.findUnique({
-        where: { code: 'QRIS' },
-      });
-
-      if (!qrisMethod) {
-        throw new Error('PAYMENT_METHOD_NOT_FOUND');
-      }
-
-      const feeRule = await tx.paymentFeeRule.findUnique({
-        where: {
-          userId_paymentMethodId: {
-            userId,
-            paymentMethodId: qrisMethod.id,
+        // 7. Find Collision-Free Total Amount
+        // Query ALL PENDING transactions for THIS PaymentAccount
+        // Note: As long as status is PENDING, totalAmount remains strictly RESERVED (even if expiredAt has passed)
+        // until worker explicitly reconciles the transaction to PAID or EXPIRED.
+        const activePending = await tx.transaction.findMany({
+          where: {
+            paymentAccountId: paymentAccount.id,
+            status: 'PENDING',
           },
-        },
-      });
+          select: {
+            totalAmount: true,
+          },
+        });
 
-      const feeType = feeRule && feeRule.isEnabled ? feeRule.type : 'NONE';
-      const feeValue = feeRule && feeRule.isEnabled ? feeRule.value : 0;
-      const feeAmount = this.calculateFee(input.amount, feeType, feeValue);
+        const usedTotalAmounts = new Set(activePending.map((t) => Number(t.totalAmount)));
 
-      // 7. Find Collision-Free Unique Total Amount (totalAmount = amount + feeAmount + uniqueCode)
-      // Query ALL PENDING transactions for THIS PaymentAccount
-      // Note: As long as status is PENDING, totalAmount remains strictly RESERVED (even if expiredAt has passed)
-      // until worker explicitly reconciles the transaction to PAID or EXPIRED.
-      const activePending = await tx.transaction.findMany({
-        where: {
-          paymentAccountId: paymentAccount.id,
-          status: 'PENDING',
-        },
-        select: {
-          totalAmount: true,
-        },
-      });
+        const baseTotal = input.amount + feeAmount;
+        const useUniqueCode = input.useUniqueCode !== false; // default true if undefined
 
-      const usedTotalAmounts = new Set(activePending.map((t) => Number(t.totalAmount)));
+        let uniqueCode = 0;
+        let totalAmount = baseTotal;
 
-      const baseTotal = input.amount + feeAmount;
-      let uniqueCode: number | null = null;
-      let totalAmount: number | null = null;
+        if (useUniqueCode) {
+          // MODE ON: Allocate auto-incrementing uniqueCode (1..999) to guarantee unique totalAmount
+          let allocatedCode: number | null = null;
+          let allocatedTotal: number | null = null;
 
-      // Iterate code from 1 to 999 to find collision-free totalAmount
-      for (let candidateCode = 1; candidateCode <= 999; candidateCode++) {
-        const candidateTotal = baseTotal + candidateCode;
-        if (!usedTotalAmounts.has(candidateTotal)) {
-          uniqueCode = candidateCode;
-          totalAmount = candidateTotal;
-          break;
+          for (let candidateCode = 1; candidateCode <= 999; candidateCode++) {
+            const candidateTotal = baseTotal + candidateCode;
+            if (!usedTotalAmounts.has(candidateTotal)) {
+              allocatedCode = candidateCode;
+              allocatedTotal = candidateTotal;
+              break;
+            }
+          }
+
+          if (!allocatedCode || !allocatedTotal) {
+            throw new Error('NO_AVAILABLE_UNIQUE_AMOUNT: Transaction limit reached for this payment window. Please retry shortly.');
+          }
+
+          uniqueCode = allocatedCode;
+          totalAmount = allocatedTotal;
+        } else {
+          // MODE OFF: uniqueCode = 0, totalAmount = baseTotal
+          // Strict Safety Guard: Ensure no active PENDING transaction exists on this PaymentAccount with the exact same totalAmount
+          if (usedTotalAmounts.has(baseTotal)) {
+            throw new Error('DUPLICATE_PENDING_AMOUNT');
+          }
+          uniqueCode = 0;
+          totalAmount = baseTotal;
         }
-      }
 
-      if (!uniqueCode || !totalAmount) {
-        throw new Error('NO_AVAILABLE_UNIQUE_AMOUNT: Transaction limit reached for this payment window. Please retry shortly.');
-      }
+        // 8. Generate Dynamic QRIS EMVCo Payload
+        const qrisPayload = generateDynamicQRIS(
+          paymentAccount.goBizAccount.qrString,
+          totalAmount
+        );
 
-      // 8. Generate Dynamic QRIS EMVCo Payload
-      const qrisPayload = generateDynamicQRIS(
-        paymentAccount.goBizAccount.qrString,
-        totalAmount
-      );
+        // 9. Deterministic Expiry Duration: Exact 5 MINUTES from shared reference timestamp
+        const createdAt = new Date();
+        const expiredAt = new Date(createdAt.getTime() + TRANSACTION_EXPIRY_MS);
+        const externalRefNo = this.generateRefNo();
 
-      // 9. Deterministic Expiry Duration: Exact 5 MINUTES from shared reference timestamp
-      const createdAt = new Date();
-      const expiredAt = new Date(createdAt.getTime() + TRANSACTION_EXPIRY_MS);
-      const externalRefNo = this.generateRefNo();
-
-      // 10. Persist Transaction & Event
-      const trx = await tx.transaction.create({
-        data: {
-          merchantTradeNo: orderIdClean,
-          externalRefNo,
-          userId,
-          paymentAccountId: paymentAccount.id,
-          paymentMethodId: qrisMethod.id,
-          providerId: paymentAccount.providerId,
-          amount: input.amount,
-          feeType,
-          feeValue,
-          feeAmount,
-          uniqueCode,
-          totalAmount,
-          status: 'PENDING',
-          qrisPayload,
-          createdAt,
-          expiredAt,
-          customerName: input.customerName || null,
-          customerEmail: input.customerEmail || null,
-          metadata: input.metadata ? input.metadata : undefined,
-        },
-      });
-
-      await tx.transactionEvent.create({
-        data: {
-          transactionId: trx.id,
-          type: 'TRANSACTION_CREATED',
-          toStatus: 'PENDING',
-          metadata: {
+        // 10. Persist Transaction & Event
+        const trx = await tx.transaction.create({
+          data: {
+            merchantTradeNo: orderIdClean,
+            externalRefNo,
+            userId,
+            paymentAccountId: paymentAccount.id,
+            paymentMethodId: qrisMethod.id,
+            providerId: paymentAccount.providerId,
             amount: input.amount,
+            feeType,
+            feeValue,
             feeAmount,
             uniqueCode,
             totalAmount,
+            status: 'PENDING',
+            qrisPayload,
+            createdAt,
             expiredAt,
-            provider: 'GOBIZ',
-            method: 'QRIS',
+            customerName: input.customerName || null,
+            customerEmail: input.customerEmail || null,
+            metadata: input.metadata ? input.metadata : undefined,
           },
-        },
-      });
+        });
 
-      return trx;
-    }, {
-      maxWait: 10000,
-      timeout: 20000,
-    });
+        await tx.transactionEvent.create({
+          data: {
+            transactionId: trx.id,
+            type: 'TRANSACTION_CREATED',
+            toStatus: 'PENDING',
+            metadata: {
+              amount: input.amount,
+              feeAmount,
+              uniqueCode,
+              totalAmount,
+              expiredAt,
+              provider: 'GOBIZ',
+              method: 'QRIS',
+            },
+          },
+        });
+
+        return trx;
+      },
+      {
+        maxWait: 10000,
+        timeout: 20000,
+      }
+    );
 
     return {
       id: result.id,

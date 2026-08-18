@@ -116,7 +116,7 @@ Authorization: Bearer np_live_...
     '/v1/transactions': {
       post: {
         summary: 'Create Dynamic QRIS Transaction',
-        description: 'Creates a new dynamic QRIS payment transaction with an exact 5-minute expiry window. Calculates fee markup, assigns an auto-increment unique code (+1, +2, etc.) to prevent payment collision, and generates the EMVCo dynamic QR string.',
+        description: 'Creates a new dynamic QRIS payment transaction with an exact 5-minute expiry window. Calculates fee markup, assigns an auto-increment unique code (+1, +2, etc. when useUniqueCode is true) to prevent payment collision, and generates the EMVCo dynamic QR string.',
         operationId: 'createTransaction',
         tags: ['Transactions'],
         security: [
@@ -135,6 +135,7 @@ Authorization: Bearer np_live_...
                 orderId: 'INV-2026-001',
                 amount: 25000,
                 paymentAccountId: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
+                useUniqueCode: true,
                 customerName: 'John Doe',
                 customerEmail: 'customer@example.com',
                 metadata: {
@@ -251,17 +252,32 @@ Authorization: Bearer np_live_...
             },
           },
           '409': {
-            description: 'Conflict - Duplicate active pending order ID',
+            description: 'Conflict - Duplicate active pending order ID or pending payment amount collision when useUniqueCode is false',
             content: {
               'application/json': {
                 schema: {
                   $ref: '#/components/schemas/ErrorResponse',
                 },
-                example: {
-                  success: false,
-                  message: 'An active pending transaction already exists with orderId "INV-2026-001".',
-                  error: {
-                    code: 'DUPLICATE_PENDING_ORDER',
+                examples: {
+                  duplicatePendingAmount: {
+                    summary: 'Pending Amount Collision (useUniqueCode: false)',
+                    value: {
+                      success: false,
+                      message: 'An active pending transaction with the same payment amount already exists for this payment account. Please retry after payment is completed or expired, or enable useUniqueCode.',
+                      error: {
+                        code: 'DUPLICATE_PENDING_AMOUNT',
+                      },
+                    },
+                  },
+                  duplicatePendingOrder: {
+                    summary: 'Duplicate Order ID',
+                    value: {
+                      success: false,
+                      message: 'An active pending transaction already exists with orderId "INV-2026-001".',
+                      error: {
+                        code: 'DUPLICATE_PENDING_ORDER',
+                      },
+                    },
                   },
                 },
               },
@@ -562,6 +578,12 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
             type: 'string',
             description: 'Optional PaymentAccount ID obtained from `GET /v1/payment-channels`. If omitted, NeetPay automatically routes to your active default GoBiz account.',
             example: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
+          },
+          useUniqueCode: {
+            type: 'boolean',
+            default: true,
+            description: 'Optional flag to control unique code allocation. Set to `true` (default) to automatically assign a +1..+999 unique code to prevent pending amount collisions. Set to `false` to disable unique code (rejection with 409 DUPLICATE_PENDING_AMOUNT occurs if an identical total payment amount is already pending on the selected Payment Account).',
+            example: true,
           },
           customerName: {
             type: 'string',
