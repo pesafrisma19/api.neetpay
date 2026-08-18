@@ -13,6 +13,7 @@ NeetPay provides an automated, non-custodial QRIS payment infrastructure. Funds 
 * **Non-Custodial**: NeetPay never holds customer funds. Settlement is processed directly by the payment provider (GoBiz).
 * **Deterministic Dynamic QRIS**: Every payment generates an official EMVCo QR code string with an exact **5-minute (300 seconds)** validity window.
 * **Auto-Increment Unique Code Mechanism**: Transactions automatically assign a unique payment code starting from \`+1\` (e.g. Rp 25.001 for a base Rp 25.000 order). If the calculated \`totalAmount\` collides with an active \`PENDING\` transaction on the same GoBiz Payment Account, it incrementally tests \`+2\`, \`+3\`, up to \`+999\`. This unique code is calculated and assigned automatically by the platform; merchants cannot manually set it.
+* **Payment Channels**: Merchants can query available payment accounts via \`GET /v1/payment-channels\` to present selectable payment channels to their end users. The returned \`id\` can be passed as \`paymentAccountId\` in \`POST /v1/transactions\`.
 * **Real-time Webhook Notifications**: When a payment mutation is detected by the NeetPay worker, an HTTP POST notification is dispatched to your configured endpoint with timing-safe HMAC-SHA256 signature verification.
 
 ---
@@ -62,6 +63,56 @@ Authorization: Bearer np_live_...
     },
   ],
   paths: {
+    '/v1/payment-channels': {
+      get: {
+        summary: 'List Active Payment Channels',
+        description: `Retrieves the list of active payment channels configured for the authenticated merchant account.
+
+* The \`name\` field is the merchant-customizable display label (e.g. *"QRIS Utama"*, *"QRIS Toko 2"*).
+* The \`id\` field is the technical PaymentAccount ID (e.g. \`"cuid_example"\`) that should be provided as \`paymentAccountId\` when creating transactions via \`POST /v1/transactions\`.`,
+        operationId: 'listPaymentChannels',
+        tags: ['Payment Channels'],
+        security: [
+          {
+            BearerAuth: [],
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Active payment channels retrieved successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/PaymentChannelsResponse',
+                },
+                example: {
+                  success: true,
+                  message: 'Payment channels retrieved successfully',
+                  data: [
+                    {
+                      id: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
+                      name: 'QRIS Utama',
+                      method: 'QRIS',
+                      provider: 'GOBIZ',
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          '401': {
+            description: 'Unauthorized - Invalid or missing API key',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     '/v1/transactions': {
       post: {
         summary: 'Create Dynamic QRIS Transaction',
@@ -83,6 +134,7 @@ Authorization: Bearer np_live_...
               example: {
                 orderId: 'INV-2026-001',
                 amount: 25000,
+                paymentAccountId: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
                 customerName: 'John Doe',
                 customerEmail: 'customer@example.com',
                 metadata: {
@@ -451,6 +503,44 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
       },
     },
     schemas: {
+      PaymentChannelsResponse: {
+        type: 'object',
+        properties: {
+          success: { type: 'boolean', example: true },
+          message: { type: 'string', example: 'Payment channels retrieved successfully' },
+          data: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/PaymentChannelItem',
+            },
+          },
+        },
+      },
+      PaymentChannelItem: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'PaymentAccount technical ID. Pass this value as `paymentAccountId` in `POST /v1/transactions`.',
+            example: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
+          },
+          name: {
+            type: 'string',
+            description: 'Merchant-customized display name for UI display to customers (e.g. "QRIS Utama").',
+            example: 'QRIS Utama',
+          },
+          method: {
+            type: 'string',
+            description: 'Payment method type.',
+            example: 'QRIS',
+          },
+          provider: {
+            type: 'string',
+            description: 'Underlying payment provider.',
+            example: 'GOBIZ',
+          },
+        },
+      },
       CreateTransactionRequest: {
         type: 'object',
         required: ['orderId', 'amount'],
@@ -470,8 +560,8 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
           },
           paymentAccountId: {
             type: 'string',
-            description: 'Optional ID of a specific connected GoBiz Payment Account. If omitted, NeetPay automatically routes to your active default GoBiz account.',
-            example: 'cuid_payment_acc_123',
+            description: 'Optional PaymentAccount ID obtained from `GET /v1/payment-channels`. If omitted, NeetPay automatically routes to your active default GoBiz account.',
+            example: 'cuid_cm6u8a1b2c3d4e5f6g7h8i9j',
           },
           customerName: {
             type: 'string',

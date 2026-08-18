@@ -81,9 +81,13 @@ export class PaymentAccountService {
       qrString = await GoBizClient.fetchQrisStringFromPortal(tokens.accessToken);
     }
 
+    // Default display name format: {Payment Method} {Provider Label} - {Outlet/Merchant Name}
+    const defaultDisplayName = input.accountName?.trim() ||
+      (profile.outletName ? `QRIS GoBiz - ${profile.outletName.trim()}` : 'QRIS GoBiz');
+
     // 4. Save Connected Account with authType = OTP
     return await this.saveConnectedAccount(userId, tokens, profile, {
-      accountName: input.accountName || profile.outletName,
+      accountName: defaultDisplayName,
       authType: 'OTP',
       loginIdentifier: profile.phone || '',
       customMinAmount: input.customMinAmount,
@@ -109,8 +113,12 @@ export class PaymentAccountService {
     // For PASSWORD accounts, password is encrypted with AES-256-GCM for automatic recovery fallback
     const encryptedPassword = encryptAES(input.password);
 
+    // Default display name format: {Payment Method} {Provider Label} - {Outlet/Merchant Name}
+    const defaultDisplayName = input.accountName?.trim() ||
+      (profile.outletName ? `QRIS GoBiz - ${profile.outletName.trim()}` : 'QRIS GoBiz');
+
     return await this.saveConnectedAccount(userId, tokens, profile, {
-      accountName: input.accountName || profile.outletName,
+      accountName: defaultDisplayName,
       authType: 'PASSWORD',
       loginIdentifier: input.email.trim().toLowerCase(),
       encryptedPassword,
@@ -203,29 +211,49 @@ export class PaymentAccountService {
       name: paymentAccount.name,
       status: paymentAccount.status,
       provider: 'GOBIZ',
-      authType: options.authType,
-      merchantId: profile.merchantId,
+      merchantName: profile.outletName,
       outletName: profile.outletName,
-      customMinAmount: paymentAccount.customMinAmount,
-      customMaxAmount: paymentAccount.customMaxAmount,
       hasQrString: !!options.qrString,
-      createdAt: paymentAccount.createdAt,
+      connectedAt: paymentAccount.createdAt,
     };
   }
 
   /**
-   * List all payment accounts for a user (Sanitized: NO passwords, NO raw tokens)
+   * List Public Active Payment Channels for Merchant API (GET /v1/payment-channels)
+   * Sanitized: Never exposes credentials, tokens, or GoBiz internals
+   */
+  static async listPublicChannels(userId: string) {
+    const accounts = await prisma.paymentAccount.findMany({
+      where: {
+        userId,
+        isActive: true,
+        status: 'ACTIVE',
+        goBizAccount: {
+          qrString: { not: null },
+        },
+      },
+      include: {
+        provider: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return accounts.map((acc) => ({
+      id: acc.id,
+      name: acc.name,
+      method: 'QRIS',
+      provider: acc.provider.code,
+    }));
+  }
+
+  /**
+   * List all Connected Payment Accounts for Dashboard (with token lifecycle audit)
    */
   static async listAccounts(userId: string) {
     const accounts = await prisma.paymentAccount.findMany({
       where: { userId, isActive: true },
       include: {
-        provider: {
-          select: {
-            code: true,
-            name: true,
-          },
-        },
+        provider: true,
         goBizAccount: {
           select: {
             id: true,
@@ -371,7 +399,7 @@ export class PaymentAccountService {
   }
 
   /**
-   * Update Payment Account settings (Name, Limits, Fee Rule)
+   * Update Payment Account settings (Display Name, Limits, Fee Rule)
    */
   static async updateAccount(
     userId: string,
@@ -392,10 +420,15 @@ export class PaymentAccountService {
       throw new Error('ACCOUNT_NOT_FOUND');
     }
 
-    const updated = await prisma.paymentAccount.update({
+    const trimmedName = data.name !== undefined ? data.name.trim() : undefined;
+    if (trimmedName !== undefined && trimmedName.length === 0) {
+      throw new Error('ACCOUNT_NAME_REQUIRED');
+    }
+
+    await prisma.paymentAccount.update({
       where: { id: accountId },
       data: {
-        ...(data.name ? { name: data.name.trim() } : {}),
+        ...(trimmedName !== undefined ? { name: trimmedName } : {}),
         ...(data.customMinAmount !== undefined ? { customMinAmount: data.customMinAmount } : {}),
         ...(data.customMaxAmount !== undefined ? { customMaxAmount: data.customMaxAmount } : {}),
       },

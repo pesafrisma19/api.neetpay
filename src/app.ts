@@ -7,6 +7,7 @@ import { successResponse } from './lib/response.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { apiKeyRouter } from './modules/api-keys/api-keys.routes.js';
 import { paymentAccountsRouter } from './modules/payment-accounts/payment-accounts.routes.js';
+import { paymentChannelsRouter } from './modules/payment-accounts/payment-channels.routes.js';
 import { webhookRouter } from './modules/webhooks/webhook.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { transactionsRouter } from './modules/transactions/transactions.routes.js';
@@ -70,8 +71,9 @@ app.route('/api/payment-accounts', paymentAccountsRouter);
 app.route('/api/webhook', webhookRouter);
 app.route('/api/admin', adminRouter);
 
-// Public Merchant Transactions API (https://api.neetpay.web.id/v1/transactions)
+// Public Merchant APIs
 app.route('/v1/transactions', transactionsRouter);
+app.route('/v1/payment-channels', paymentChannelsRouter);
 
 // Forward /api/me to authRouter /me
 app.get('/api/me', (c) => authRouter.fetch(new Request(`${new URL(c.req.url).origin}/me`, c.req.raw)));
