@@ -380,47 +380,25 @@ export class GoBizDynamicService {
 
       if (chargeRes.ok) {
         const chargeData = (await chargeRes.json()) as any;
-        qrString = chargeData.qr_string || chargeData.qr_code || chargeData.qr_payload || null;
-        qrisUrl = chargeData.qris_url || chargeData.qr_url || null;
+        qrString =
+          typeof chargeData.qr_string === 'string' && chargeData.qr_string.trim()
+            ? chargeData.qr_string.trim()
+            : (chargeData.qr_payload || null);
 
-        // Parse Midtrans actions array (e.g. generate-qr-code image URL)
-        if (Array.isArray(chargeData.actions)) {
-          const qrAction = chargeData.actions.find(
-            (a: any) =>
-              a.name === 'generate-qr-code' ||
-              a.name === 'qr-code' ||
-              a.name === 'qr-code-url' ||
-              a.name === 'generate-qr-code-url'
-          );
-          if (qrAction?.url && !qrisUrl) {
-            qrisUrl = qrAction.url;
-          }
-
-          const qrStringAction = chargeData.actions.find(
-            (a: any) => a.name === 'qr-string' || a.name === 'qr_string' || a.name === 'raw-qr'
-          );
-          if (qrStringAction?.url && !qrString) {
-            qrString = qrStringAction.url;
-          }
-        }
-
-        // Also check nested gopay/qris objects if present
-        if (!qrString && chargeData.gopay?.qr_string) {
-          qrString = chargeData.gopay.qr_string;
-        }
-        if (!qrisUrl && chargeData.gopay?.qr_url) {
-          qrisUrl = chargeData.gopay.qr_url;
-        }
+        qrisUrl =
+          typeof chargeData.qr_code_url === 'string' && chargeData.qr_code_url.trim()
+            ? chargeData.qr_code_url.trim()
+            : (chargeData.qris_url || chargeData.qr_url || null);
 
         logger.info(
           {
             providerOrderId,
             hasQrString: !!qrString,
             hasQrisUrl: !!qrisUrl,
-            chargeKeys: Object.keys(chargeData || {}),
-            actions: chargeData.actions,
+            qrisUrl,
+            hasDeeplink: !!chargeData.deeplink_url,
           },
-          'Snap dynamic QRIS string pre-charged successfully'
+          'Snap dynamic QRIS string & image URL pre-charged successfully'
         );
       } else {
         const chargeErr = await chargeRes.text();
