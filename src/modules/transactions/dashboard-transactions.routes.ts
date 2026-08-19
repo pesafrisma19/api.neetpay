@@ -54,6 +54,12 @@ dashboardTransactionsRouter.get('/', requireAuth, async (c) => {
           select: {
             id: true,
             name: true,
+            provider: {
+              select: {
+                code: true,
+                name: true,
+              },
+            },
             goBizAccount: {
               select: {
                 outletName: true,
@@ -78,6 +84,8 @@ dashboardTransactionsRouter.get('/', requireAuth, async (c) => {
     paymentAccount: {
       id: trx.paymentAccount?.id || '',
       name: trx.paymentAccount?.name || 'GoBiz QRIS',
+      providerCode: trx.paymentAccount?.provider?.code,
+      providerName: trx.paymentAccount?.provider?.name,
       outletName: trx.paymentAccount?.goBizAccount?.outletName || trx.paymentAccount?.name || 'GoBiz Outlet',
       merchantName: trx.paymentAccount?.goBizAccount?.merchantName || null,
     },
@@ -125,6 +133,12 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
     include: {
       paymentAccount: {
         include: {
+          provider: {
+            select: {
+              code: true,
+              name: true,
+            },
+          },
           goBizAccount: {
             select: {
               outletName: true,
@@ -154,16 +168,21 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
   // Find linked provider event reference if paid
   let providerRefId: string | null = null;
   if (trx.status === 'PAID') {
-    const providerEvent = await prisma.providerEvent.findFirst({
-      where: {
-        paymentAccountId: trx.paymentAccountId || '',
-        createdAt: {
-          gte: trx.createdAt,
+    const paymentDetectedEvent = trx.events.find((evt: any) => evt.type === 'PAYMENT_DETECTED');
+    if (paymentDetectedEvent?.metadata && (paymentDetectedEvent.metadata as any).providerRefId) {
+      providerRefId = (paymentDetectedEvent.metadata as any).providerRefId;
+    } else {
+      const providerEvent = await prisma.providerEvent.findFirst({
+        where: {
+          paymentAccountId: trx.paymentAccountId || '',
+          createdAt: {
+            gte: trx.createdAt,
+          },
         },
-      },
-      orderBy: { createdAt: 'asc' },
-    });
-    providerRefId = providerEvent?.providerRefId || null;
+        orderBy: { createdAt: 'asc' },
+      });
+      providerRefId = providerEvent?.providerRefId || null;
+    }
   }
 
   return c.json(
@@ -188,6 +207,8 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
         paymentAccount: {
           id: trx.paymentAccount?.id,
           name: trx.paymentAccount?.name,
+          providerCode: trx.paymentAccount?.provider?.code,
+          providerName: trx.paymentAccount?.provider?.name,
           outletName: trx.paymentAccount?.goBizAccount?.outletName,
           merchantName: trx.paymentAccount?.goBizAccount?.merchantName,
         },

@@ -9,6 +9,24 @@ import type { AppEnv } from '../../types/hono.js';
 export const midtransInboundRouter = new Hono<AppEnv>();
 
 /**
+ * Parse Midtrans timestamp string ("YYYY-MM-DD HH:mm:ss" in WIB / UTC+7) into a valid UTC Date object.
+ * Returns null if timestamp is missing, malformed, or invalid.
+ */
+function parseMidtransTimestamp(timeStr?: string): Date | null {
+  if (!timeStr || typeof timeStr !== 'string') return null;
+
+  const trimmed = timeStr.trim();
+
+  if (trimmed.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(trimmed.replace(' ', 'T') + '+07:00');
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+/**
  * POST /api/webhooks/providers/midtrans
  * Public Inbound Payment Notification receiver for GoPay Merchant Dynamic (Midtrans Payment Link/Snap)
  * Secured via SHA-512 signature verification using stored merchant Server Key
@@ -135,7 +153,10 @@ midtransInboundRouter.post('/', async (c) => {
       logger.warn({ orderId, error: e.message }, 'Gateway confirmation check skipped due to network warning');
     }
 
-    const paidAt = payload.settlement_time ? new Date(payload.settlement_time) : new Date();
+    const paidAt =
+      parseMidtransTimestamp(payload.settlement_time) ??
+      parseMidtransTimestamp(payload.transaction_time) ??
+      new Date();
     const providerRefId = transactionId || orderId;
 
     try {
