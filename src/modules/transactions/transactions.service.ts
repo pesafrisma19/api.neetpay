@@ -187,6 +187,7 @@ export class TransactionService {
         let uniqueCode = 0;
         let totalAmount = baseTotal;
         let qrisPayload: string | null = null;
+        let qrisUrl: string | null = null;
         let checkoutUrl: string | null = null;
         let providerOrderId: string | null = null;
         let paymentLinkId: string | null = null;
@@ -194,7 +195,7 @@ export class TransactionService {
         const externalRefNo = this.generateRefNo();
 
         if (isDynamic) {
-          // GOBIZ_DYNAMIC: Exact amount (uniqueCode = 0), hosted checkout created provider-side
+          // GOBIZ_DYNAMIC: Exact amount (uniqueCode = 0), hosted checkout created provider-side + dynamic QR extraction
           uniqueCode = 0;
           totalAmount = baseTotal;
 
@@ -208,7 +209,8 @@ export class TransactionService {
           checkoutUrl = hosted.paymentUrl;
           providerOrderId = hosted.providerOrderId;
           paymentLinkId = hosted.paymentLinkId;
-          qrisPayload = null;
+          qrisPayload = hosted.qrString || null;
+          qrisUrl = hosted.qrisUrl || null;
         } else {
           // GOBIZ NATIVE: Existing algorithm
           const activePending = await tx.transaction.findMany({
@@ -279,6 +281,7 @@ export class TransactionService {
             totalAmount,
             status: 'PENDING',
             qrisPayload,
+            qrisUrl,
             createdAt,
             expiredAt,
             customerName: input.customerName || null,
@@ -327,6 +330,7 @@ export class TransactionService {
       unique_code: result.uniqueCode,
       total_amount: Number(result.totalAmount),
       qr_string: result.qrisPayload,
+      qris_url: result.qrisUrl,
       checkout_url: (result.metadata as any)?.checkoutUrl || undefined,
       customer_name: result.customerName,
       customer_email: result.customerEmail,
@@ -380,6 +384,7 @@ export class TransactionService {
       unique_code: transaction.uniqueCode,
       total_amount: Number(transaction.totalAmount),
       qr_string: transaction.qrisPayload,
+      qris_url: transaction.qrisUrl,
       checkout_url: (transaction.metadata as any)?.checkoutUrl || undefined,
       customer_name: transaction.customerName,
       customer_email: transaction.customerEmail,

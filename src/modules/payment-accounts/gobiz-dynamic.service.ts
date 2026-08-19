@@ -292,7 +292,13 @@ export class GoBizDynamicService {
       customerName?: string | null;
       customerEmail?: string | null;
     }
-  ): Promise<{ paymentUrl: string; paymentLinkId: string; providerOrderId: string }> {
+  ): Promise<{
+    paymentUrl: string;
+    paymentLinkId: string;
+    providerOrderId: string;
+    qrString: string | null;
+    qrisUrl: string | null;
+  }> {
     if (!paymentAccount.goBizAccount?.credentialEncrypted) {
       throw new Error('CREDENTIALS_NOT_FOUND: Please reconnect your GoPay Merchant Dynamic account');
     }
@@ -324,7 +330,7 @@ export class GoBizDynamicService {
       'Creating GoPay Merchant Dynamic hosted checkout'
     );
 
-    const plRes = await fetch('https://api.midtrans.com/v1/payment-links', {
+    const snapRes = await fetch('https://app.midtrans.com/snap/v1/transactions', {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
@@ -341,25 +347,64 @@ export class GoBizDynamicService {
         customer_required: false,
         custom_field1: params.externalRefNo,
         enabled_payments: ['gopay'],
-        usage_limit: 1,
       }),
     });
 
-    if (!plRes.ok) {
-      const errBody = await plRes.text();
-      logger.error({ status: plRes.status, errBody }, 'Failed to create hosted checkout link');
-      throw new Error(`HOSTED_CHECKOUT_FAILED: HTTP ${plRes.status}`);
+    if (!snapRes.ok) {
+      const errBody = await snapRes.text();
+      logger.error({ status: snapRes.status, errBody }, 'Failed to create snap transaction for hosted checkout');
+      throw new Error(`HOSTED_CHECKOUT_FAILED: HTTP ${snapRes.status}`);
     }
 
-    const data = (await plRes.json()) as any;
+    const snapData = (await snapRes.json()) as any;
 
-    if (!data.payment_url) {
-      throw new Error('INVALID_GATEWAY_RESPONSE: payment_url missing from gateway response');
+    if (!snapData.token || !snapData.redirect_url) {
+      throw new Error('INVALID_GATEWAY_RESPONSE: token or redirect_url missing from snap response');
+    }
+
+    // Step 2: Pre-charge to extract EMVCo dynamic qr_string and qris_url
+    let qrString: string | null = null;
+    let qrisUrl: string | null = null;
+
+    try {
+      const chargeRes = await fetch(`https://app.midtrans.com/snap/v2/transactions/${snapData.token}/charge`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          payment_type: 'gopay',
+        }),
+      });
+
+      if (chargeRes.ok) {
+        const chargeData = (await chargeRes.json()) as any;
+        qrString = chargeData.qr_string || null;
+        qrisUrl = chargeData.qris_url || null;
+        logger.info(
+          { providerOrderId, hasQrString: !!qrString, hasQrisUrl: !!qrisUrl },
+          'Snap dynamic QRIS string pre-charged successfully'
+        );
+      } else {
+        const chargeErr = await chargeRes.text();
+        logger.warn(
+          { status: chargeRes.status, chargeErr, providerOrderId },
+          'Snap pre-charge step returned non-OK, falling back to hosted redirect URL'
+        );
+      }
+    } catch (chargeErr: any) {
+      logger.warn(
+        { error: chargeErr.message, providerOrderId },
+        'Snap pre-charge fetch error, falling back to hosted redirect URL'
+      );
     }
 
     return {
-      paymentUrl: data.payment_url,
-      paymentLinkId: data.payment_link_id || data.id || providerOrderId,
+      qrString,
+      qrisUrl,
+      paymentUrl: snapData.redirect_url,
+      paymentLinkId: snapData.token || providerOrderId,
       providerOrderId,
     };
   }
