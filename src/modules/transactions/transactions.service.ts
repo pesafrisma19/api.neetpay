@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../lib/prisma.js';
 import { generateDynamicQRIS } from '../../lib/qris.js';
+import { GoBizDynamicService } from '../payment-accounts/gobiz-dynamic.service.js';
 
 export interface CreateTransactionInput {
   orderId: string;
@@ -118,12 +119,17 @@ export class TransactionService {
           throw new Error('NO_ACTIVE_PAYMENT_ACCOUNT');
         }
 
-        if (!paymentAccount.goBizAccount?.qrString) {
+        const isDynamic = paymentAccount.provider.code === 'GOBIZ_DYNAMIC';
+
+        if (!isDynamic && !paymentAccount.goBizAccount?.qrString) {
           throw new Error('BASE_QRIS_NOT_FOUND');
+        }
+        if (isDynamic && !paymentAccount.goBizAccount?.credentialEncrypted) {
+          throw new Error('CREDENTIALS_NOT_FOUND');
         }
 
         // 3. Unique Total Amount & Collision Guard: Lock PaymentAccount row in PostgreSQL
-        // Serializes parallel requests for the same GoBiz payment account
+        // Serializes parallel requests for the same payment account
         await tx.$queryRaw`
           SELECT "id" FROM "payment_accounts" WHERE "id" = ${paymentAccount.id} FOR UPDATE
         `;
@@ -177,68 +183,84 @@ export class TransactionService {
         const feeValue = feeRule && feeRule.isEnabled ? feeRule.value : 0;
         const feeAmount = this.calculateFee(input.amount, feeType, feeValue);
 
-        // 7. Find Collision-Free Total Amount
-        // Query ALL PENDING transactions for THIS PaymentAccount
-        // Note: As long as status is PENDING, totalAmount remains strictly RESERVED (even if expiredAt has passed)
-        // until worker explicitly reconciles the transaction to PAID or EXPIRED.
-        const activePending = await tx.transaction.findMany({
-          where: {
-            paymentAccountId: paymentAccount.id,
-            status: 'PENDING',
-          },
-          select: {
-            totalAmount: true,
-          },
-        });
-
-        const usedTotalAmounts = new Set(activePending.map((t) => Number(t.totalAmount)));
-
         const baseTotal = input.amount + feeAmount;
-        const useUniqueCode = paymentAccount.useUniqueCode;
-
         let uniqueCode = 0;
         let totalAmount = baseTotal;
+        let qrisPayload: string | null = null;
+        let checkoutUrl: string | null = null;
+        let providerOrderId: string | null = null;
+        let paymentLinkId: string | null = null;
 
-        if (useUniqueCode) {
-          // MODE ON: Allocate auto-incrementing uniqueCode (1..999) to guarantee unique totalAmount
-          let allocatedCode: number | null = null;
-          let allocatedTotal: number | null = null;
+        const externalRefNo = this.generateRefNo();
 
-          for (let candidateCode = 1; candidateCode <= 999; candidateCode++) {
-            const candidateTotal = baseTotal + candidateCode;
-            if (!usedTotalAmounts.has(candidateTotal)) {
-              allocatedCode = candidateCode;
-              allocatedTotal = candidateTotal;
-              break;
-            }
-          }
-
-          if (!allocatedCode || !allocatedTotal) {
-            throw new Error('NO_AVAILABLE_UNIQUE_AMOUNT: Transaction limit reached for this payment window. Please retry shortly.');
-          }
-
-          uniqueCode = allocatedCode;
-          totalAmount = allocatedTotal;
-        } else {
-          // MODE OFF: uniqueCode = 0, totalAmount = baseTotal
-          // Strict Safety Guard: Ensure no active PENDING transaction exists on this PaymentAccount with the exact same totalAmount
-          if (usedTotalAmounts.has(baseTotal)) {
-            throw new Error('DUPLICATE_PENDING_AMOUNT');
-          }
+        if (isDynamic) {
+          // GOBIZ_DYNAMIC: Exact amount (uniqueCode = 0), hosted checkout created provider-side
           uniqueCode = 0;
           totalAmount = baseTotal;
+
+          const hosted = await GoBizDynamicService.createHostedCheckout(paymentAccount, {
+            externalRefNo,
+            totalAmount,
+            customerName: input.customerName,
+            customerEmail: input.customerEmail,
+          });
+
+          checkoutUrl = hosted.paymentUrl;
+          providerOrderId = hosted.providerOrderId;
+          paymentLinkId = hosted.paymentLinkId;
+          qrisPayload = null;
+        } else {
+          // GOBIZ NATIVE: Existing algorithm
+          const activePending = await tx.transaction.findMany({
+            where: {
+              paymentAccountId: paymentAccount.id,
+              status: 'PENDING',
+            },
+            select: {
+              totalAmount: true,
+            },
+          });
+
+          const usedTotalAmounts = new Set(activePending.map((t) => Number(t.totalAmount)));
+          const useUniqueCode = paymentAccount.useUniqueCode;
+
+          if (useUniqueCode) {
+            let allocatedCode: number | null = null;
+            let allocatedTotal: number | null = null;
+
+            for (let candidateCode = 1; candidateCode <= 999; candidateCode++) {
+              const candidateTotal = baseTotal + candidateCode;
+              if (!usedTotalAmounts.has(candidateTotal)) {
+                allocatedCode = candidateCode;
+                allocatedTotal = candidateTotal;
+                break;
+              }
+            }
+
+            if (!allocatedCode || !allocatedTotal) {
+              throw new Error('NO_AVAILABLE_UNIQUE_AMOUNT: Transaction limit reached for this payment window. Please retry shortly.');
+            }
+
+            uniqueCode = allocatedCode;
+            totalAmount = allocatedTotal;
+          } else {
+            if (usedTotalAmounts.has(baseTotal)) {
+              throw new Error('DUPLICATE_PENDING_AMOUNT');
+            }
+            uniqueCode = 0;
+            totalAmount = baseTotal;
+          }
+
+          qrisPayload = generateDynamicQRIS(
+            paymentAccount.goBizAccount!.qrString!,
+            totalAmount
+          );
         }
 
-        // 8. Generate Dynamic QRIS EMVCo Payload
-        const qrisPayload = generateDynamicQRIS(
-          paymentAccount.goBizAccount.qrString,
-          totalAmount
-        );
-
-        // 9. Deterministic Expiry Duration: Exact 5 MINUTES from shared reference timestamp
+        // 9. Deterministic Expiry Duration: 5 MINUTES (or 15 mins for hosted checkout)
         const createdAt = new Date();
-        const expiredAt = new Date(createdAt.getTime() + TRANSACTION_EXPIRY_MS);
-        const externalRefNo = this.generateRefNo();
+        const expiryDuration = isDynamic ? 15 * 60 * 1000 : TRANSACTION_EXPIRY_MS;
+        const expiredAt = new Date(createdAt.getTime() + expiryDuration);
 
         // 10. Persist Transaction & Event
         const trx = await tx.transaction.create({
@@ -261,7 +283,11 @@ export class TransactionService {
             expiredAt,
             customerName: input.customerName || null,
             customerEmail: input.customerEmail || null,
-            metadata: input.metadata ? input.metadata : undefined,
+            metadata: {
+              ...(input.metadata || {}),
+              provider: isDynamic ? 'GOBIZ_DYNAMIC' : 'GOBIZ',
+              ...(checkoutUrl ? { checkoutUrl, providerOrderId, paymentLinkId } : {}),
+            },
           },
         });
 
@@ -276,8 +302,9 @@ export class TransactionService {
               uniqueCode,
               totalAmount,
               expiredAt,
-              provider: 'GOBIZ',
+              provider: isDynamic ? 'GOBIZ_DYNAMIC' : 'GOBIZ',
               method: 'QRIS',
+              ...(checkoutUrl ? { checkoutUrl } : {}),
             },
           },
         });
@@ -300,6 +327,7 @@ export class TransactionService {
       unique_code: result.uniqueCode,
       total_amount: Number(result.totalAmount),
       qr_string: result.qrisPayload,
+      checkout_url: (result.metadata as any)?.checkoutUrl || undefined,
       customer_name: result.customerName,
       customer_email: result.customerEmail,
       metadata: result.metadata,
@@ -352,6 +380,7 @@ export class TransactionService {
       unique_code: transaction.uniqueCode,
       total_amount: Number(transaction.totalAmount),
       qr_string: transaction.qrisPayload,
+      checkout_url: (transaction.metadata as any)?.checkoutUrl || undefined,
       customer_name: transaction.customerName,
       customer_email: transaction.customerEmail,
       metadata: transaction.metadata,

@@ -220,7 +220,7 @@ export class PaymentAccountService {
 
   /**
    * List Public Active Payment Channels for Merchant API (GET /v1/payment-channels)
-   * Sanitized: Never exposes credentials, tokens, or GoBiz internals
+   * Sanitized: Never exposes credentials, tokens, or internal engine names
    */
   static async listPublicChannels(userId: string) {
     const accounts = await prisma.paymentAccount.findMany({
@@ -228,9 +228,22 @@ export class PaymentAccountService {
         userId,
         isActive: true,
         status: 'ACTIVE',
-        goBizAccount: {
-          qrString: { not: null },
-        },
+        OR: [
+          // GOBIZ Native: requires base QRIS string
+          {
+            provider: { code: 'GOBIZ' },
+            goBizAccount: {
+              qrString: { not: null },
+            },
+          },
+          // GoPay Merchant Dynamic: requires connected GoBizAccount with credentials
+          {
+            provider: { code: 'GOBIZ_DYNAMIC' },
+            goBizAccount: {
+              credentialEncrypted: { not: '' },
+            },
+          },
+        ],
       },
       include: {
         provider: true,
@@ -242,7 +255,7 @@ export class PaymentAccountService {
       id: acc.id,
       name: acc.name,
       method: 'QRIS',
-      provider: acc.provider.code,
+      provider: acc.provider.code === 'GOBIZ_DYNAMIC' ? 'GoPay Merchant Dynamic' : 'GoPay Merchant',
     }));
   }
 

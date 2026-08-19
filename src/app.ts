@@ -10,6 +10,7 @@ import { paymentAccountsRouter } from './modules/payment-accounts/payment-accoun
 import { goBizDynamicRouter } from './modules/payment-accounts/gobiz-dynamic.routes.js';
 import { paymentChannelsRouter } from './modules/payment-accounts/payment-channels.routes.js';
 import { webhookRouter } from './modules/webhooks/webhook.routes.js';
+import { midtransInboundRouter } from './modules/webhooks/midtrans-inbound.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { transactionsRouter } from './modules/transactions/transactions.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
@@ -71,6 +72,7 @@ app.route('/api/api-key', apiKeyRouter);
 app.route('/api/payment-accounts', paymentAccountsRouter);
 app.route('/api/payment-accounts/gobiz-dynamic', goBizDynamicRouter);
 app.route('/api/webhook', webhookRouter);
+app.route('/api/webhooks/providers/midtrans', midtransInboundRouter);
 app.route('/api/admin', adminRouter);
 
 // Public Merchant APIs

@@ -1,5 +1,6 @@
+import crypto from 'crypto';
 import { prisma } from '../../lib/prisma.js';
-import { encryptAES } from '../../lib/encryption.js';
+import { encryptAES, decryptAES } from '../../lib/encryption.js';
 import { GoBizClient, type GoBizTokenInfo } from '../../providers/gobiz/gobiz.client.js';
 import { GoBizLifecycleTracker } from '../../providers/gobiz/gobiz.lifecycle.js';
 import { logger } from '../../lib/logger.js';
@@ -278,5 +279,255 @@ export class GoBizDynamicService {
         customMaxAmount: input.customMaxAmount,
       }
     );
+  }
+
+  /**
+   * Create production hosted checkout for GoPay Merchant Dynamic using stored encrypted credentials (NO re-login)
+   */
+  static async createHostedCheckout(
+    paymentAccount: any,
+    params: {
+      externalRefNo: string;
+      totalAmount: number;
+      customerName?: string | null;
+      customerEmail?: string | null;
+    }
+  ): Promise<{ paymentUrl: string; paymentLinkId: string; providerOrderId: string }> {
+    if (!paymentAccount.goBizAccount?.credentialEncrypted) {
+      throw new Error('CREDENTIALS_NOT_FOUND: Please reconnect your GoPay Merchant Dynamic account');
+    }
+
+    let serverKey: string;
+    try {
+      const decrypted = JSON.parse(decryptAES(paymentAccount.goBizAccount.credentialEncrypted));
+      serverKey = decrypted.serverKey;
+    } catch {
+      throw new Error('FAILED_DECRYPT_CREDENTIALS: Stored credentials could not be decrypted');
+    }
+
+    if (!serverKey) {
+      throw new Error('SERVER_KEY_MISSING: Midtrans Server Key not found in stored credentials');
+    }
+
+    const authHeader = `Basic ${Buffer.from(`${serverKey}:`).toString('base64')}`;
+    const providerOrderId = params.externalRefNo;
+
+    const customerDetails: any = {
+      first_name: params.customerName?.trim() || 'Customer',
+    };
+    if (params.customerEmail?.trim()) {
+      customerDetails.email = params.customerEmail.trim();
+    }
+
+    logger.info(
+      { paymentAccountId: paymentAccount.id, providerOrderId, amount: params.totalAmount },
+      'Creating GoPay Merchant Dynamic hosted checkout'
+    );
+
+    const plRes = await fetch('https://api.midtrans.com/v1/payment-links', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+      },
+      body: JSON.stringify({
+        transaction_details: {
+          order_id: providerOrderId,
+          gross_amount: params.totalAmount,
+        },
+        customer_details: customerDetails,
+        customer_required: false,
+        custom_field1: params.externalRefNo,
+        enabled_payments: ['gopay'],
+        usage_limit: 1,
+      }),
+    });
+
+    if (!plRes.ok) {
+      const errBody = await plRes.text();
+      logger.error({ status: plRes.status, errBody }, 'Failed to create hosted checkout link');
+      throw new Error(`HOSTED_CHECKOUT_FAILED: HTTP ${plRes.status}`);
+    }
+
+    const data = (await plRes.json()) as any;
+
+    if (!data.payment_url) {
+      throw new Error('INVALID_GATEWAY_RESPONSE: payment_url missing from gateway response');
+    }
+
+    return {
+      paymentUrl: data.payment_url,
+      paymentLinkId: data.payment_link_id || data.id || providerOrderId,
+      providerOrderId,
+    };
+  }
+
+  /**
+   * Create a single isolated Test Dynamic QR (Rp 1.000) using stored encrypted credentials (NO re-login)
+   */
+  static async createTestQr(userId: string, paymentAccountId: string) {
+    const paymentAccount = await prisma.paymentAccount.findFirst({
+      where: {
+        id: paymentAccountId,
+        userId,
+        isActive: true,
+      },
+      include: {
+        provider: true,
+        goBizAccount: true,
+      },
+    });
+
+    if (!paymentAccount) {
+      throw new Error('PAYMENT_ACCOUNT_NOT_FOUND');
+    }
+
+    if (paymentAccount.provider.code !== 'GOBIZ_DYNAMIC') {
+      throw new Error('INVALID_PROVIDER: Test Dynamic QR is only supported for GoPay Merchant Dynamic accounts');
+    }
+
+    if (!paymentAccount.goBizAccount?.credentialEncrypted) {
+      throw new Error('CREDENTIALS_NOT_FOUND: Please reconnect your GoPay Merchant Dynamic account');
+    }
+
+    // Decrypt stored credentials without logging in again
+    let serverKey: string;
+    try {
+      const decrypted = JSON.parse(decryptAES(paymentAccount.goBizAccount.credentialEncrypted));
+      serverKey = decrypted.serverKey;
+    } catch {
+      throw new Error('FAILED_DECRYPT_CREDENTIALS: Stored credentials could not be decrypted');
+    }
+
+    if (!serverKey) {
+      throw new Error('SERVER_KEY_MISSING: Midtrans Server Key not found in stored credentials');
+    }
+
+    const randomSuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const testOrderId = `NEET-TEST-${randomSuffix}`;
+    const authHeader = `Basic ${Buffer.from(`${serverKey}:`).toString('base64')}`;
+
+    logger.info(
+      { userId, paymentAccountId, testOrderId },
+      'Creating Test Dynamic QR (Rp 1.000) using stored encrypted credentials'
+    );
+
+    const plRes = await fetch('https://api.midtrans.com/v1/payment-links', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization': authHeader,
+      },
+      body: JSON.stringify({
+        transaction_details: {
+          order_id: testOrderId,
+          gross_amount: 1000,
+        },
+        enabled_payments: ['gopay'],
+        usage_limit: 1,
+      }),
+    });
+
+    if (!plRes.ok) {
+      const errBody = await plRes.text();
+      logger.error({ status: plRes.status, errBody }, 'Failed to create test payment link');
+      throw new Error(`MIDTRANS_CREATE_FAILED: HTTP ${plRes.status}`);
+    }
+
+    const data = (await plRes.json()) as any;
+
+    return {
+      testOrderId,
+      amount: 1000,
+      status: 'PENDING',
+      paymentUrl: data.payment_url || null,
+      paymentLinkId: data.payment_link_id || data.id || null,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Check status of a test transaction using stored credentials (NO re-login)
+   */
+  static async checkTestStatus(userId: string, paymentAccountId: string, orderId: string) {
+    const paymentAccount = await prisma.paymentAccount.findFirst({
+      where: {
+        id: paymentAccountId,
+        userId,
+        isActive: true,
+      },
+      include: {
+        provider: true,
+        goBizAccount: true,
+      },
+    });
+
+    if (!paymentAccount) {
+      throw new Error('PAYMENT_ACCOUNT_NOT_FOUND');
+    }
+
+    if (!paymentAccount.goBizAccount?.credentialEncrypted) {
+      throw new Error('CREDENTIALS_NOT_FOUND');
+    }
+
+    let serverKey: string;
+    try {
+      const decrypted = JSON.parse(decryptAES(paymentAccount.goBizAccount.credentialEncrypted));
+      serverKey = decrypted.serverKey;
+    } catch {
+      throw new Error('FAILED_DECRYPT_CREDENTIALS');
+    }
+
+    const authHeader = `Basic ${Buffer.from(`${serverKey}:`).toString('base64')}`;
+
+    // Query Midtrans Status API
+    const res = await fetch(`https://api.midtrans.com/v2/${orderId}/status`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': authHeader,
+      },
+    });
+
+    const data = (await res.json()) as any;
+
+    if (res.status === 404 || data.status_code === '404') {
+      return {
+        orderId,
+        status: 'PENDING',
+        rawStatus: 'pending',
+        isPaid: false,
+        amount: 1000,
+      };
+    }
+
+    const txStatus = (data.transaction_status || '').toLowerCase();
+    let mappedStatus: 'PENDING' | 'PAID' | 'EXPIRED' | 'FAILED' = 'PENDING';
+    let isPaid = false;
+
+    if (txStatus === 'settlement' || txStatus === 'capture') {
+      mappedStatus = 'PAID';
+      isPaid = true;
+    } else if (txStatus === 'expire') {
+      mappedStatus = 'EXPIRED';
+    } else if (txStatus === 'deny' || txStatus === 'cancel') {
+      mappedStatus = 'FAILED';
+    } else {
+      mappedStatus = 'PENDING';
+    }
+
+    return {
+      orderId,
+      transactionId: data.transaction_id || null,
+      status: mappedStatus,
+      rawStatus: txStatus,
+      isPaid,
+      amount: data.gross_amount ? Number(data.gross_amount) : 1000,
+      paidAt: data.settlement_time || null,
+      issuer: data.issuer || data.payment_type || 'gopay',
+      acquirer: data.acquirer || 'gopay',
+    };
   }
 }
