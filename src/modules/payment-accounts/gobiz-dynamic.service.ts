@@ -56,6 +56,24 @@ export class GoBizDynamicService {
   }
 
   /**
+   * Verify if user has purchased / been granted GoPay Merchant Dynamic access (Rp 500.000 add-on)
+   */
+  private static async verifyDynamicAccess(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { hasDynamicAccess: true },
+    });
+
+    if (!user) {
+      throw new Error('USER_NOT_FOUND');
+    }
+
+    if (!user.hasDynamicAccess) {
+      throw new Error('DYNAMIC_ACCESS_REQUIRED');
+    }
+  }
+
+  /**
    * Helper to persist PaymentAccount + GoBizAccount for GOBIZ_DYNAMIC with AES-256-GCM encryption
    */
   private static async saveDynamicConnectedAccount(
@@ -157,6 +175,7 @@ export class GoBizDynamicService {
    * Connect GoPay Merchant Dynamic using Email & Password
    */
   static async connectWithPassword(userId: string, input: ConnectDynamicPasswordInput) {
+    await this.verifyDynamicAccess(userId);
     await this.verifyAccountLimit(userId);
 
     // 1. Authenticate with GoBiz
@@ -219,6 +238,7 @@ export class GoBizDynamicService {
    * Request SMS OTP for GoPay Merchant Dynamic
    */
   static async requestOtp(userId: string, phoneNumber: string) {
+    await this.verifyDynamicAccess(userId);
     await this.verifyAccountLimit(userId);
     return await GoBizClient.requestOtp(phoneNumber);
   }
@@ -227,6 +247,7 @@ export class GoBizDynamicService {
    * Verify SMS OTP and Connect GoPay Merchant Dynamic
    */
   static async verifyOtpAndConnect(userId: string, input: ConnectDynamicOtpInput) {
+    await this.verifyDynamicAccess(userId);
     await this.verifyAccountLimit(userId);
 
     // 1. Verify OTP with GoBiz

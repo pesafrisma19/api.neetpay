@@ -34,6 +34,17 @@ const connectPasswordSchema = z.object({
  */
 goBizDynamicRouter.post('/request-otp', requireAuth, async (c) => {
   const user = c.get('user');
+
+  if (!user.hasDynamicAccess) {
+    return c.json(
+      errorResponse(
+        'DYNAMIC_ACCESS_REQUIRED',
+        'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+      ),
+      403
+    );
+  }
+
   const body = await c.req.json();
   const parsed = requestOtpSchema.safeParse(body);
 
@@ -48,6 +59,15 @@ goBizDynamicRouter.post('/request-otp', requireAuth, async (c) => {
     const result = await GoBizDynamicService.requestOtp(user.id, parsed.data.phoneNumber);
     return c.json(successResponse(result, 'GoPay Merchant OTP requested successfully. Check your SMS.'));
   } catch (err: any) {
+    if (err.message === 'DYNAMIC_ACCESS_REQUIRED') {
+      return c.json(
+        errorResponse(
+          'DYNAMIC_ACCESS_REQUIRED',
+          'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+        ),
+        403
+      );
+    }
     if (err.message === 'ACCOUNT_LIMIT_EXCEEDED') {
       return c.json(
         errorResponse('ACCOUNT_LIMIT_EXCEEDED', 'You have reached the maximum payment account limit for your current subscription plan.'),
@@ -64,6 +84,17 @@ goBizDynamicRouter.post('/request-otp', requireAuth, async (c) => {
  */
 goBizDynamicRouter.post('/verify-otp', requireAuth, async (c) => {
   const user = c.get('user');
+
+  if (!user.hasDynamicAccess) {
+    return c.json(
+      errorResponse(
+        'DYNAMIC_ACCESS_REQUIRED',
+        'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+      ),
+      403
+    );
+  }
+
   const body = await c.req.json();
   const parsed = verifyOtpSchema.safeParse(body);
 
@@ -78,6 +109,15 @@ goBizDynamicRouter.post('/verify-otp', requireAuth, async (c) => {
     const account = await GoBizDynamicService.verifyOtpAndConnect(user.id, parsed.data);
     return c.json(successResponse(account, 'GoPay Merchant Dynamic account connected successfully via OTP!'), 201);
   } catch (err: any) {
+    if (err.message === 'DYNAMIC_ACCESS_REQUIRED') {
+      return c.json(
+        errorResponse(
+          'DYNAMIC_ACCESS_REQUIRED',
+          'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+        ),
+        403
+      );
+    }
     if (err.message === 'ACCOUNT_LIMIT_EXCEEDED') {
       return c.json(
         errorResponse('ACCOUNT_LIMIT_EXCEEDED', 'Payment account limit exceeded for your current plan.'),
@@ -94,6 +134,17 @@ goBizDynamicRouter.post('/verify-otp', requireAuth, async (c) => {
  */
 goBizDynamicRouter.post('/connect-password', requireAuth, async (c) => {
   const user = c.get('user');
+
+  if (!user.hasDynamicAccess) {
+    return c.json(
+      errorResponse(
+        'DYNAMIC_ACCESS_REQUIRED',
+        'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+      ),
+      403
+    );
+  }
+
   const body = await c.req.json();
   const parsed = connectPasswordSchema.safeParse(body);
 
@@ -108,6 +159,15 @@ goBizDynamicRouter.post('/connect-password', requireAuth, async (c) => {
     const account = await GoBizDynamicService.connectWithPassword(user.id, parsed.data);
     return c.json(successResponse(account, 'GoPay Merchant Dynamic account connected successfully!'), 201);
   } catch (err: any) {
+    if (err.message === 'DYNAMIC_ACCESS_REQUIRED') {
+      return c.json(
+        errorResponse(
+          'DYNAMIC_ACCESS_REQUIRED',
+          'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+        ),
+        403
+      );
+    }
     if (err.message === 'ACCOUNT_LIMIT_EXCEEDED') {
       return c.json(
         errorResponse('ACCOUNT_LIMIT_EXCEEDED', 'Payment account limit exceeded for your current plan. Please upgrade to Pro.'),

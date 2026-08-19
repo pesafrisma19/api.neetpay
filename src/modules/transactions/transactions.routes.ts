@@ -44,6 +44,16 @@ transactionsRouter.post('/', requireApiKey, async (c) => {
   } catch (err: any) {
     const msg = err.message || 'Failed to create transaction';
 
+    if (msg === 'DYNAMIC_ACCESS_REQUIRED') {
+      return c.json(
+        errorResponse(
+          'DYNAMIC_ACCESS_REQUIRED',
+          'GoPay Merchant Dynamic memerlukan aktivasi add-on Rp500.000 sekali bayar.'
+        ),
+        403
+      );
+    }
+
     if (msg === 'MONTHLY_LIMIT_EXCEEDED') {
       return c.json(
         errorResponse(

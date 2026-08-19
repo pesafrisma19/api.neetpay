@@ -121,6 +121,17 @@ export class TransactionService {
 
         const isDynamic = paymentAccount.provider.code === 'GOBIZ_DYNAMIC';
 
+        if (isDynamic) {
+          const owner = await tx.user.findUnique({
+            where: { id: userId },
+            select: { hasDynamicAccess: true },
+          });
+
+          if (!owner?.hasDynamicAccess) {
+            throw new Error('DYNAMIC_ACCESS_REQUIRED');
+          }
+        }
+
         if (!isDynamic && !paymentAccount.goBizAccount?.qrString) {
           throw new Error('BASE_QRIS_NOT_FOUND');
         }

@@ -174,6 +174,8 @@ adminRouter.get('/users', async (c) => {
           name: true,
           role: true,
           status: true,
+          hasDynamicAccess: true,
+          dynamicActivatedAt: true,
           createdAt: true,
           subscriptions: {
             where: { status: 'ACTIVE' },
@@ -208,6 +210,8 @@ adminRouter.get('/users', async (c) => {
         name: u.name,
         role: u.role,
         status: u.status,
+        hasDynamicAccess: u.hasDynamicAccess,
+        dynamicActivatedAt: u.dynamicActivatedAt,
         createdAt: u.createdAt,
         plan: {
           code: activeSub?.plan.code || 'FREE',
@@ -260,6 +264,8 @@ adminRouter.get('/users/:id', async (c) => {
         name: true,
         role: true,
         status: true,
+        hasDynamicAccess: true,
+        dynamicActivatedAt: true,
         createdAt: true,
         updatedAt: true,
         subscriptions: {
@@ -337,6 +343,8 @@ adminRouter.get('/users/:id', async (c) => {
             name: user.name,
             role: user.role,
             status: user.status,
+            hasDynamicAccess: user.hasDynamicAccess,
+            dynamicActivatedAt: user.dynamicActivatedAt,
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
             plan: {
@@ -387,6 +395,54 @@ adminRouter.get('/users/:id', async (c) => {
     );
   } catch (err: any) {
     return c.json(errorResponse('USER_DETAIL_FAILED', err.message), 500);
+  }
+});
+
+/**
+ * 3.1 Admin Toggle GoPay Dynamic Access for a User
+ * PATCH /api/admin/users/:id/dynamic-access
+ */
+adminRouter.patch('/users/:id/dynamic-access', async (c) => {
+  try {
+    const userId = c.req.param('id');
+    const body = await c.req.json();
+    const hasDynamicAccess = Boolean(body.hasDynamicAccess);
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      return c.json(errorResponse('USER_NOT_FOUND', 'User does not exist'), 404);
+    }
+
+    const dynamicActivatedAt = hasDynamicAccess
+      ? (user.dynamicActivatedAt ?? new Date())
+      : user.dynamicActivatedAt;
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        hasDynamicAccess,
+        dynamicActivatedAt,
+      },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        hasDynamicAccess: true,
+        dynamicActivatedAt: true,
+      },
+    });
+
+    return c.json(
+      successResponse(
+        updatedUser,
+        `GoPay Dynamic access ${hasDynamicAccess ? 'activated' : 'deactivated'} successfully`
+      )
+    );
+  } catch (err: any) {
+    return c.json(errorResponse('USER_UPDATE_FAILED', err.message), 500);
   }
 });
 

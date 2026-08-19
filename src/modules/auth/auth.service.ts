@@ -132,6 +132,8 @@ export class AuthService {
         name: user.name,
         role: user.role,
         status: user.status,
+        hasDynamicAccess: user.hasDynamicAccess,
+        dynamicActivatedAt: user.dynamicActivatedAt,
         createdAt: user.createdAt,
       },
     };
@@ -163,6 +165,8 @@ export class AuthService {
         name: true,
         role: true,
         status: true,
+        hasDynamicAccess: true,
+        dynamicActivatedAt: true,
         createdAt: true,
         subscriptions: {
           where: { status: 'ACTIVE' },
@@ -202,6 +206,8 @@ export class AuthService {
       name: user.name,
       role: user.role,
       status: user.status,
+      hasDynamicAccess: user.hasDynamicAccess,
+      dynamicActivatedAt: user.dynamicActivatedAt,
       createdAt: user.createdAt,
       subscription: currentSubscription
         ? {

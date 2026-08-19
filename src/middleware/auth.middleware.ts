@@ -46,6 +46,8 @@ export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
           name: true,
           role: true,
           status: true,
+          hasDynamicAccess: true,
+          dynamicActivatedAt: true,
           createdAt: true,
           updatedAt: true,
         },

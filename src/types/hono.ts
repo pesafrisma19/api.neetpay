@@ -6,6 +6,8 @@ export type AuthUser = {
   name: string;
   role: Role;
   status: UserStatus;
+  hasDynamicAccess: boolean;
+  dynamicActivatedAt?: Date | null;
   createdAt: Date;
   updatedAt?: Date;
 };
@@ -16,6 +18,7 @@ export type MerchantUser = {
   name: string;
   role: Role;
   status: UserStatus;
+  hasDynamicAccess: boolean;
 };
 
 export type AppEnv = {

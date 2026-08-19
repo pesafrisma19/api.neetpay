@@ -38,6 +38,7 @@ export const requireApiKey: MiddlewareHandler<AppEnv> = async (c, next) => {
           name: true,
           role: true,
           status: true,
+          hasDynamicAccess: true,
         },
       },
     },

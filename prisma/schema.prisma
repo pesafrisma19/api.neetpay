@@ -94,10 +94,12 @@ model User {
   email        String     @unique
   passwordHash String
   name         String
-  role         Role       @default(USER)
-  status       UserStatus @default(ACTIVE)
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  role               Role       @default(USER)
+  status             UserStatus @default(ACTIVE)
+  hasDynamicAccess   Boolean    @default(false)
+  dynamicActivatedAt DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
 
   // Relationships
   sessions          AuthSession[]

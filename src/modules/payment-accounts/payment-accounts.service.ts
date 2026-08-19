@@ -223,6 +223,11 @@ export class PaymentAccountService {
    * Sanitized: Never exposes credentials, tokens, or internal engine names
    */
   static async listPublicChannels(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { hasDynamicAccess: true },
+    });
+
     const accounts = await prisma.paymentAccount.findMany({
       where: {
         userId,
@@ -236,13 +241,17 @@ export class PaymentAccountService {
               qrString: { not: null },
             },
           },
-          // GoPay Merchant Dynamic: requires connected GoBizAccount with credentials
-          {
-            provider: { code: 'GOBIZ_DYNAMIC' },
-            goBizAccount: {
-              credentialEncrypted: { not: '' },
-            },
-          },
+          // GoPay Merchant Dynamic: requires user to have hasDynamicAccess === true
+          ...(user?.hasDynamicAccess
+            ? [
+                {
+                  provider: { code: 'GOBIZ_DYNAMIC' },
+                  goBizAccount: {
+                    credentialEncrypted: { not: '' },
+                  },
+                },
+              ]
+            : []),
         ],
       },
       include: {
