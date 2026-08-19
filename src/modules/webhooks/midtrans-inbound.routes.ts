@@ -21,13 +21,18 @@ midtransInboundRouter.post('/', async (c) => {
     return c.json({ status: 'error', message: 'Invalid JSON payload' }, 400);
   }
 
-  // Acknowledge Midtrans non-transaction health check / connected account test pings
-  if (
+  // Acknowledge Midtrans dashboard test notifications / connected account health checks
+  const isAccountTest =
     (payload.account_status || payload.account_id) &&
-    !payload.transaction_status
-  ) {
+    !payload.transaction_status;
+
+  const isPaymentNotificationTest =
+    typeof payload.order_id === 'string' &&
+    payload.order_id.startsWith('payment_notif_test_');
+
+  if (isAccountTest || isPaymentNotificationTest) {
     return c.json(
-      { status: 'success', message: 'Midtrans ping acknowledged' },
+      { status: 'success', message: 'Midtrans test notification acknowledged' },
       200
     );
   }
