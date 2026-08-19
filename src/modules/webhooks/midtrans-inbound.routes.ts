@@ -21,6 +21,17 @@ midtransInboundRouter.post('/', async (c) => {
     return c.json({ status: 'error', message: 'Invalid JSON payload' }, 400);
   }
 
+  // Acknowledge Midtrans non-transaction health check / connected account test pings
+  if (
+    (payload.account_status || payload.account_id) &&
+    !payload.transaction_status
+  ) {
+    return c.json(
+      { status: 'success', message: 'Midtrans ping acknowledged' },
+      200
+    );
+  }
+
   const externalRefNo = payload.custom_field1;
   const orderId = payload.order_id;
   const statusCode = payload.status_code;
