@@ -330,6 +330,7 @@ export class GoBizDynamicService {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
         'Authorization': authHeader,
+        'X-Override-Notification': 'https://api.neetpay.web.id/api/webhooks/providers/midtrans',
       },
       body: JSON.stringify({
         transaction_details: {
