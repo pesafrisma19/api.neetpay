@@ -25,6 +25,7 @@ temp/
 scratch/
 scratch-*
 **/scratch-*
+tests/
 
 # System & Tooling
 .DS_Store

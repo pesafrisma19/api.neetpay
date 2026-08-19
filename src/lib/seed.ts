@@ -120,6 +120,50 @@ export async function runBaseSeed() {
   });
   logger.info({ mapping: `${goBizProvider.code} -> ${qrisMethod.code}` }, '✓ ProviderPaymentMethod GOBIZ-QRIS mapped');
 
+  // 6. Seed Payment Provider: GOBIZ_DYNAMIC
+  const goBizDynamicProvider = await prisma.paymentProvider.upsert({
+    where: { code: 'GOBIZ_DYNAMIC' },
+    update: {
+      name: 'GoPay Merchant Dynamic',
+      isEnabled: true,
+      isMaintenance: false,
+    },
+    create: {
+      code: 'GOBIZ_DYNAMIC',
+      name: 'GoPay Merchant Dynamic',
+      isEnabled: true,
+      isMaintenance: false,
+    },
+  });
+  logger.info({ provider: goBizDynamicProvider.code }, '✓ Payment Provider GOBIZ_DYNAMIC seeded');
+
+  // 7. Seed ProviderPaymentMethod: GOBIZ_DYNAMIC -> QRIS
+  await prisma.providerPaymentMethod.upsert({
+    where: {
+      providerId_paymentMethodId: {
+        providerId: goBizDynamicProvider.id,
+        paymentMethodId: qrisMethod.id,
+      },
+    },
+    update: {
+      providerMethodCode: 'GOBIZ_DYNAMIC_QRIS',
+      isEnabled: true,
+      minAmount: 1000,
+      maxAmount: 10000000,
+    },
+    create: {
+      providerId: goBizDynamicProvider.id,
+      paymentMethodId: qrisMethod.id,
+      providerMethodCode: 'GOBIZ_DYNAMIC_QRIS',
+      isEnabled: true,
+      minAmount: 1000,
+      maxAmount: 10000000,
+      providerFeePercent: 0,
+      providerFeeFlat: 0,
+    },
+  });
+  logger.info({ mapping: `${goBizDynamicProvider.code} -> ${qrisMethod.code}` }, '✓ ProviderPaymentMethod GOBIZ_DYNAMIC-QRIS mapped');
+
   logger.info('🎉 NeetPay V1 base seed completed successfully!');
 }
 

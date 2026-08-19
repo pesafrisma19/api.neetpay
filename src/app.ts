@@ -7,6 +7,7 @@ import { successResponse } from './lib/response.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { apiKeyRouter } from './modules/api-keys/api-keys.routes.js';
 import { paymentAccountsRouter } from './modules/payment-accounts/payment-accounts.routes.js';
+import { goBizDynamicRouter } from './modules/payment-accounts/gobiz-dynamic.routes.js';
 import { paymentChannelsRouter } from './modules/payment-accounts/payment-channels.routes.js';
 import { webhookRouter } from './modules/webhooks/webhook.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
@@ -68,6 +69,7 @@ app.route('/api/dashboard', dashboardRouter);
 app.route('/api/transactions', dashboardTransactionsRouter);
 app.route('/api/api-key', apiKeyRouter);
 app.route('/api/payment-accounts', paymentAccountsRouter);
+app.route('/api/payment-accounts/gobiz-dynamic', goBizDynamicRouter);
 app.route('/api/webhook', webhookRouter);
 app.route('/api/admin', adminRouter);
 
