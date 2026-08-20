@@ -55,7 +55,7 @@ midtransInboundRouter.post('/', async (c) => {
     );
   }
 
-  const externalRefNo = payload.custom_field1;
+  const externalRefNo = payload.custom_field1 || payload.order_id;
   const orderId = payload.order_id;
   const statusCode = payload.status_code;
   const grossAmount = payload.gross_amount;
@@ -64,8 +64,8 @@ midtransInboundRouter.post('/', async (c) => {
   const transactionId = payload.transaction_id;
 
   if (!externalRefNo) {
-    logger.warn({ orderId, transactionStatus }, 'Inbound webhook missing custom_field1');
-    return c.json({ status: 'error', message: 'custom_field1 missing' }, 400);
+    logger.warn({ orderId, transactionStatus }, 'Inbound webhook missing custom_field1 and order_id');
+    return c.json({ status: 'error', message: 'Identifier missing' }, 400);
   }
 
   if (!orderId || !statusCode || !grossAmount || !signatureKey) {
