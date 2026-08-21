@@ -517,7 +517,7 @@ export class GoBizDynamicService {
     }
 
     const snapData = (await snapRes.json()) as any;
-    let qrString: string | null = null;
+    let qrImage: string | null = null;
 
     if (snapData.token) {
       try {
@@ -534,10 +534,40 @@ export class GoBizDynamicService {
 
         if (chargeRes.ok) {
           const chargeData = (await chargeRes.json()) as any;
-          qrString =
-            typeof chargeData.qr_string === 'string' && chargeData.qr_string.trim()
-              ? chargeData.qr_string.trim()
-              : (chargeData.qr_payload || null);
+          const qrCodeUrl =
+            (typeof chargeData.qr_code_url === 'string' && chargeData.qr_code_url.trim())
+              ? chargeData.qr_code_url.trim()
+              : (Array.isArray(chargeData.actions)
+                  ? chargeData.actions.find((a: any) => a.name === 'generate-qr-code')?.url
+                  : null);
+
+          if (qrCodeUrl) {
+            try {
+              const parsedUrl = new URL(qrCodeUrl);
+              if (parsedUrl.protocol === 'https:' && parsedUrl.hostname === 'api.midtrans.com') {
+                const imgRes = await fetch(parsedUrl.toString(), {
+                  method: 'GET',
+                  headers: {
+                    'User-Agent': 'NeetPay-Gateway/1.0',
+                    'Accept': 'image/png,image/*,*/*',
+                  },
+                  redirect: 'error',
+                  signal: AbortSignal.timeout(10000),
+                });
+
+                if (imgRes.ok) {
+                  const contentType = imgRes.headers.get('content-type') || 'image/png';
+                  if (contentType.startsWith('image/')) {
+                    const imgBuffer = await imgRes.arrayBuffer();
+                    const base64Data = Buffer.from(imgBuffer).toString('base64');
+                    qrImage = `data:${contentType};base64,${base64Data}`;
+                  }
+                }
+              }
+            } catch {
+              // Ignore image fetch error safely
+            }
+          }
         }
       } catch (chargeErr: any) {
         logger.warn({ error: chargeErr.message, testOrderId }, 'Test Snap pre-charge fetch error');
@@ -548,7 +578,7 @@ export class GoBizDynamicService {
       testOrderId,
       amount: 1000,
       status: 'PENDING',
-      qrString,
+      qrImage,
       createdAt: new Date().toISOString(),
     };
   }
