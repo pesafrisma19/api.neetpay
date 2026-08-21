@@ -75,12 +75,20 @@ export class DynamicPaymentWorker {
       for (const trx of pendingDynamicTrxs) {
         const orderId = trx.externalRefNo;
         const paymentAccount = trx.paymentAccount;
+        const now = new Date();
+        const isPastExpiry = now > new Date(trx.expiredAt);
 
         if (!paymentAccount?.goBizAccount?.credentialEncrypted) {
-          console.warn(
-            `[DynamicWorker] ⚠️ Missing credentials for transaction ${trx.id} (Account: ${trx.paymentAccountId})`
-          );
-          result.errorsCount++;
+          if (isPastExpiry) {
+            await this.atomicTransitionExpired(trx, { order_id: orderId });
+            console.log(`[DynamicWorker] ⌛ Stale transaction ${orderId} without credentials transitioned to EXPIRED`);
+            result.expiredCount++;
+          } else {
+            console.warn(
+              `[DynamicWorker] ⚠️ Missing credentials for transaction ${trx.id} (Account: ${trx.paymentAccountId})`
+            );
+            result.errorsCount++;
+          }
           continue;
         }
 
@@ -90,16 +98,28 @@ export class DynamicPaymentWorker {
           const decrypted = JSON.parse(decryptAES(paymentAccount.goBizAccount.credentialEncrypted));
           serverKey = decrypted.serverKey;
         } catch (err: any) {
-          console.error(
-            `[DynamicWorker] ⚠️ Failed to decrypt credentials for transaction ${trx.id}: ${err.message}`
-          );
-          result.errorsCount++;
+          if (isPastExpiry) {
+            await this.atomicTransitionExpired(trx, { order_id: orderId });
+            console.log(`[DynamicWorker] ⌛ Stale transaction ${orderId} (expired ${trx.expiredAt.toISOString()}) transitioned to EXPIRED`);
+            result.expiredCount++;
+          } else {
+            console.error(
+              `[DynamicWorker] ⚠️ Failed to decrypt credentials for transaction ${trx.id}: ${err.message}`
+            );
+            result.errorsCount++;
+          }
           continue;
         }
 
         if (!serverKey) {
-          console.warn(`[DynamicWorker] ⚠️ Server key missing in decrypted credentials for transaction ${trx.id}`);
-          result.errorsCount++;
+          if (isPastExpiry) {
+            await this.atomicTransitionExpired(trx, { order_id: orderId });
+            console.log(`[DynamicWorker] ⌛ Stale transaction ${orderId} without serverKey transitioned to EXPIRED`);
+            result.expiredCount++;
+          } else {
+            console.warn(`[DynamicWorker] ⚠️ Server key missing in decrypted credentials for transaction ${trx.id}`);
+            result.errorsCount++;
+          }
           continue;
         }
 
@@ -118,7 +138,11 @@ export class DynamicPaymentWorker {
           midtransData = await res.json();
 
           if (res.status === 404 || midtransData.status_code === '404') {
-            // Transaction not yet charged / not found in gateway -> stay pending
+            if (isPastExpiry) {
+              await this.atomicTransitionExpired(trx, { order_id: orderId });
+              console.log(`[DynamicWorker] ⌛ Expired transaction ${orderId} (404 in gateway) transitioned to EXPIRED`);
+              result.expiredCount++;
+            }
             continue;
           }
 
