@@ -319,6 +319,7 @@ export class GoBizDynamicService {
     providerOrderId: string;
     qrString: string | null;
     qrisUrl: string | null;
+    deeplinkUrl?: string | null;
   }> {
     if (!paymentAccount.goBizAccount?.credentialEncrypted) {
       throw new Error('CREDENTIALS_NOT_FOUND: Please reconnect your GoPay Merchant Dynamic account');
@@ -386,6 +387,7 @@ export class GoBizDynamicService {
     // Step 2: Pre-charge to extract EMVCo dynamic qr_string and qris_url
     let qrString: string | null = null;
     let qrisUrl: string | null = null;
+    let deeplinkUrl: string | null = null;
 
     try {
       const chargeRes = await fetch(`https://app.midtrans.com/snap/v2/transactions/${snapData.token}/charge`, {
@@ -411,13 +413,20 @@ export class GoBizDynamicService {
             ? chargeData.qr_code_url.trim()
             : (chargeData.qris_url || chargeData.qr_url || null);
 
+        deeplinkUrl =
+          typeof chargeData.deeplink_url === 'string' && chargeData.deeplink_url.trim()
+            ? chargeData.deeplink_url.trim()
+            : (Array.isArray(chargeData.actions)
+                ? chargeData.actions.find((a: any) => a.name === 'deeplink-redirect')?.url || null
+                : null);
+
         logger.info(
           {
             providerOrderId,
             hasQrString: !!qrString,
             hasQrisUrl: !!qrisUrl,
             qrisUrl,
-            hasDeeplink: !!chargeData.deeplink_url,
+            hasDeeplink: !!deeplinkUrl,
           },
           'Snap dynamic QRIS string & image URL pre-charged successfully'
         );
@@ -438,6 +447,7 @@ export class GoBizDynamicService {
     return {
       qrString,
       qrisUrl,
+      deeplinkUrl,
       paymentUrl: snapData.redirect_url,
       paymentLinkId: snapData.token || providerOrderId,
       providerOrderId,

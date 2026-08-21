@@ -200,6 +200,7 @@ export class TransactionService {
         let qrisPayload: string | null = null;
         let qrisUrl: string | null = null;
         let checkoutUrl: string | null = null;
+        let deeplinkUrl: string | null = null;
         let providerOrderId: string | null = null;
         let paymentLinkId: string | null = null;
 
@@ -222,6 +223,7 @@ export class TransactionService {
           paymentLinkId = hosted.paymentLinkId;
           qrisPayload = hosted.qrString || null;
           qrisUrl = hosted.qrisUrl || null;
+          deeplinkUrl = hosted.deeplinkUrl || null;
         } else {
           // GOBIZ NATIVE: Existing algorithm
           const activePending = await tx.transaction.findMany({
@@ -301,6 +303,7 @@ export class TransactionService {
               ...(input.metadata || {}),
               provider: isDynamic ? 'GOBIZ_DYNAMIC' : 'GOBIZ',
               ...(checkoutUrl ? { checkoutUrl, providerOrderId, paymentLinkId } : {}),
+              ...(deeplinkUrl ? { deeplinkUrl } : {}),
             },
           },
         });

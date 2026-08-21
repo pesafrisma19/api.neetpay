@@ -257,6 +257,24 @@ publicPayRouter.get('/:reference', async (c) => {
     ? `https://api.neetpay.web.id/v1/transactions/${trx.merchantTradeNo}/qr.png`
     : null;
 
+  let safeDeeplinkUrl: string | null = null;
+  const rawDeeplink = (trx.metadata as any)?.deeplinkUrl;
+  if (typeof rawDeeplink === 'string' && rawDeeplink.trim()) {
+    const trimmed = rawDeeplink.trim();
+    if (trimmed.startsWith('gojek://') || trimmed.startsWith('gopay://')) {
+      safeDeeplinkUrl = trimmed;
+    } else {
+      try {
+        const parsed = new URL(trimmed);
+        if (!['app.midtrans.com', 'api.midtrans.com'].includes(parsed.hostname)) {
+          safeDeeplinkUrl = trimmed;
+        }
+      } catch {
+        // Invalid URL safely rejected
+      }
+    }
+  }
+
   return c.json(
     successResponse(
       {
@@ -268,6 +286,7 @@ publicPayRouter.get('/:reference', async (c) => {
         total_amount: Number(trx.totalAmount),
         status: trx.status,
         qris_url: publicQrUrl,
+        deeplink_url: safeDeeplinkUrl,
         created_at: trx.createdAt.toISOString(),
         expires_at: trx.expiredAt.toISOString(),
         paid_at: trx.paidAt ? trx.paidAt.toISOString() : null,
