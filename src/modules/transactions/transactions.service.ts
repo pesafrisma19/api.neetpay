@@ -331,6 +331,19 @@ export class TransactionService {
       }
     );
 
+    const publicQrUrl = result.qrisUrl
+      ? `https://api.neetpay.web.id/v1/transactions/${result.merchantTradeNo}/qr.png`
+      : null;
+    const publicCheckoutUrl = `https://neetpay.web.id/pay/${result.merchantTradeNo}`;
+
+    const rawMeta = (result.metadata as any) || {};
+    const sanitizedMetadata: Record<string, any> = {
+      ...rawMeta,
+      ...(rawMeta.checkoutUrl ? { checkoutUrl: publicCheckoutUrl } : {}),
+    };
+    // Expose clean public fields without leaking raw provider internals
+    delete sanitizedMetadata.paymentLinkId;
+
     return {
       id: result.id,
       reference: result.merchantTradeNo,
@@ -341,11 +354,11 @@ export class TransactionService {
       unique_code: result.uniqueCode,
       total_amount: Number(result.totalAmount),
       qr_string: result.qrisPayload,
-      qris_url: result.qrisUrl,
-      checkout_url: (result.metadata as any)?.checkoutUrl || undefined,
+      qris_url: publicQrUrl,
+      checkout_url: publicCheckoutUrl,
       customer_name: result.customerName,
       customer_email: result.customerEmail,
-      metadata: result.metadata,
+      metadata: sanitizedMetadata,
       expires_at: result.expiredAt,
       created_at: result.createdAt,
     };
@@ -383,6 +396,18 @@ export class TransactionService {
       throw new Error('TRANSACTION_NOT_FOUND');
     }
 
+    const publicQrUrl = transaction.qrisUrl
+      ? `https://api.neetpay.web.id/v1/transactions/${transaction.merchantTradeNo}/qr.png`
+      : null;
+    const publicCheckoutUrl = `https://neetpay.web.id/pay/${transaction.merchantTradeNo}`;
+
+    const rawMeta = (transaction.metadata as any) || {};
+    const sanitizedMetadata: Record<string, any> = {
+      ...rawMeta,
+      ...(rawMeta.checkoutUrl ? { checkoutUrl: publicCheckoutUrl } : {}),
+    };
+    delete sanitizedMetadata.paymentLinkId;
+
     return {
       id: transaction.id,
       reference: transaction.merchantTradeNo,
@@ -395,11 +420,11 @@ export class TransactionService {
       unique_code: transaction.uniqueCode,
       total_amount: Number(transaction.totalAmount),
       qr_string: transaction.qrisPayload,
-      qris_url: transaction.qrisUrl,
-      checkout_url: (transaction.metadata as any)?.checkoutUrl || undefined,
+      qris_url: publicQrUrl,
+      checkout_url: publicCheckoutUrl,
       customer_name: transaction.customerName,
       customer_email: transaction.customerEmail,
-      metadata: transaction.metadata,
+      metadata: sanitizedMetadata,
       paid_at: transaction.paidAt,
       expires_at: transaction.expiredAt,
       created_at: transaction.createdAt,

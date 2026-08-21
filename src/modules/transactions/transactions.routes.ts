@@ -1,11 +1,13 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { prisma } from '../../lib/prisma.js';
 import { TransactionService } from './transactions.service.js';
 import { requireApiKey } from '../../middleware/api-key.middleware.js';
 import { successResponse, errorResponse } from '../../lib/response.js';
 import type { AppEnv } from '../../types/hono.js';
 
 export const transactionsRouter = new Hono<AppEnv>();
+export const publicPayRouter = new Hono<AppEnv>();
 
 export const createTransactionSchema = z.object({
   orderId: z.string().min(1, 'orderId is required').max(100, 'orderId is too long'),
@@ -14,6 +16,78 @@ export const createTransactionSchema = z.object({
   customerName: z.string().max(100).optional(),
   customerEmail: z.string().email().optional(),
   metadata: z.record(z.any()).optional(),
+});
+
+/**
+ * Public Route: Proxy QRIS image directly from internal provider URL without redirect (SSRF Protected)
+ * GET /v1/transactions/:reference/qr.png
+ */
+transactionsRouter.get('/:reference/qr.png', async (c) => {
+  const reference = c.req.param('reference');
+
+  const trx = await prisma.transaction.findFirst({
+    where: {
+      merchantTradeNo: reference,
+    },
+    select: {
+      id: true,
+      qrisUrl: true,
+    },
+  });
+
+  if (!trx || !trx.qrisUrl) {
+    return c.text('QR image not found', 404);
+  }
+
+  // Strict SSRF Guard
+  let targetUrl: URL;
+  try {
+    targetUrl = new URL(trx.qrisUrl);
+  } catch {
+    return c.text('Invalid QR image configuration', 500);
+  }
+
+  // 1. Enforce HTTPS only
+  if (targetUrl.protocol !== 'https:') {
+    return c.text('Insecure image URL rejected', 400);
+  }
+
+  // 2. Strict Whitelist of allowed provider image hostnames
+  const ALLOWED_HOSTNAMES = ['api.midtrans.com', 'app.midtrans.com'];
+  if (!ALLOWED_HOSTNAMES.includes(targetUrl.hostname)) {
+    return c.text('Unauthorized image host', 403);
+  }
+
+  // 3. Fetch server-side with timeout & no arbitrary redirect follow
+  try {
+    const res = await fetch(targetUrl.toString(), {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'NeetPay-Gateway/1.0',
+        'Accept': 'image/png,image/jpeg,image/*,*/*',
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) {
+      return c.text(`Provider image error: ${res.status}`, 502);
+    }
+
+    const contentType = res.headers.get('content-type') || 'image/png';
+    if (!contentType.startsWith('image/')) {
+      return c.text('Invalid content type from provider', 502);
+    }
+
+    const imageBuffer = await res.arrayBuffer();
+
+    return c.body(imageBuffer, 200, {
+      'Content-Type': contentType,
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+    });
+  } catch {
+    return c.text('Failed to retrieve QR image', 502);
+  }
 });
 
 /**
@@ -141,3 +215,65 @@ transactionsRouter.get('/:id', requireApiKey, async (c) => {
     );
   }
 });
+
+/**
+ * Public Checkout Route: Get minimal safe payment details for hosted /pay/:reference
+ * GET /v1/pay/:reference
+ */
+publicPayRouter.get('/:reference', async (c) => {
+  const reference = c.req.param('reference');
+
+  const trx = await prisma.transaction.findFirst({
+    where: {
+      merchantTradeNo: reference,
+    },
+    include: {
+      user: {
+        select: {
+          name: true,
+        },
+      },
+      paymentAccount: {
+        include: {
+          goBizAccount: {
+            select: {
+              outletName: true,
+              merchantName: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!trx) {
+    return c.json(
+      errorResponse('TRANSACTION_NOT_FOUND', 'Transaction not found with the provided identifier.'),
+      404
+    );
+  }
+
+  const publicQrUrl = trx.qrisUrl
+    ? `https://api.neetpay.web.id/v1/transactions/${trx.merchantTradeNo}/qr.png`
+    : null;
+
+  return c.json(
+    successResponse(
+      {
+        reference: trx.merchantTradeNo,
+        merchant_name: trx.user?.name || 'NeetPay Merchant',
+        outlet_name: trx.paymentAccount?.goBizAccount?.outletName || trx.paymentAccount?.name || 'QRIS Outlet',
+        amount: Number(trx.amount),
+        fee_amount: Number(trx.feeAmount),
+        total_amount: Number(trx.totalAmount),
+        status: trx.status,
+        qris_url: publicQrUrl,
+        created_at: trx.createdAt.toISOString(),
+        expires_at: trx.expiredAt.toISOString(),
+        paid_at: trx.paidAt ? trx.paidAt.toISOString() : null,
+      },
+      'Public checkout details retrieved successfully'
+    )
+  );
+});
+

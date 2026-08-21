@@ -91,7 +91,7 @@ dashboardTransactionsRouter.get('/', requireAuth, async (c) => {
     },
     customerName: trx.customerName,
     customerEmail: trx.customerEmail,
-    qrisUrl: trx.qrisUrl,
+    qrisUrl: trx.qrisUrl ? `https://api.neetpay.web.id/v1/transactions/${trx.merchantTradeNo}/qr.png` : null,
     createdAt: trx.createdAt.toISOString(),
     paidAt: trx.paidAt ? trx.paidAt.toISOString() : null,
     expiredAt: trx.expiredAt.toISOString(),
@@ -185,6 +185,18 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
     }
   }
 
+  const publicQrUrl = trx.qrisUrl
+    ? `https://api.neetpay.web.id/v1/transactions/${trx.merchantTradeNo}/qr.png`
+    : null;
+  const publicCheckoutUrl = `https://neetpay.web.id/pay/${trx.merchantTradeNo}`;
+
+  const rawMeta = (trx.metadata as any) || {};
+  const sanitizedMetadata: Record<string, any> = {
+    ...rawMeta,
+    ...(rawMeta.checkoutUrl ? { checkoutUrl: publicCheckoutUrl } : {}),
+  };
+  delete sanitizedMetadata.paymentLinkId;
+
   return c.json(
     successResponse(
       {
@@ -200,9 +212,10 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
         status: trx.status,
         customerName: trx.customerName,
         customerEmail: trx.customerEmail,
-        metadata: trx.metadata,
+        metadata: sanitizedMetadata,
         qrisPayload: trx.qrisPayload,
-        qrisUrl: trx.qrisUrl,
+        qrisUrl: publicQrUrl,
+        checkoutUrl: publicCheckoutUrl,
         providerRefId,
         paymentAccount: {
           id: trx.paymentAccount?.id,
@@ -212,14 +225,21 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
           outletName: trx.paymentAccount?.goBizAccount?.outletName,
           merchantName: trx.paymentAccount?.goBizAccount?.merchantName,
         },
-        timeline: trx.events.map((evt: any) => ({
-          id: evt.id,
-          type: evt.type,
-          fromStatus: evt.fromStatus,
-          toStatus: evt.toStatus,
-          metadata: evt.metadata,
-          createdAt: evt.createdAt.toISOString(),
-        })),
+        timeline: trx.events.map((evt: any) => {
+          const evtMeta = (evt.metadata as any) || {};
+          const sanitizedEvtMeta = {
+            ...evtMeta,
+            ...(evtMeta.checkoutUrl ? { checkoutUrl: publicCheckoutUrl } : {}),
+          };
+          return {
+            id: evt.id,
+            type: evt.type,
+            fromStatus: evt.fromStatus,
+            toStatus: evt.toStatus,
+            metadata: sanitizedEvtMeta,
+            createdAt: evt.createdAt.toISOString(),
+          };
+        }),
         webhookDeliveries: trx.webhookDeliveries.map((wh: any) => ({
           id: wh.id,
           event: wh.event,

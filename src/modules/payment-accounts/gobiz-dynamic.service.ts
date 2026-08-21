@@ -491,10 +491,10 @@ export class GoBizDynamicService {
 
     logger.info(
       { userId, paymentAccountId, testOrderId },
-      'Creating Test Dynamic QR (Rp 1.000) using stored encrypted credentials'
+      'Creating Test Dynamic QR (Rp 1.000) using Snap pre-charge flow'
     );
 
-    const plRes = await fetch('https://api.midtrans.com/v1/payment-links', {
+    const snapRes = await fetch('https://app.midtrans.com/snap/v1/transactions', {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
@@ -507,24 +507,48 @@ export class GoBizDynamicService {
           gross_amount: 1000,
         },
         enabled_payments: ['gopay'],
-        usage_limit: 1,
       }),
     });
 
-    if (!plRes.ok) {
-      const errBody = await plRes.text();
-      logger.error({ status: plRes.status, errBody }, 'Failed to create test payment link');
-      throw new Error(`MIDTRANS_CREATE_FAILED: HTTP ${plRes.status}`);
+    if (!snapRes.ok) {
+      const errBody = await snapRes.text();
+      logger.error({ status: snapRes.status, errBody }, 'Failed to create test snap transaction');
+      throw new Error(`MIDTRANS_CREATE_FAILED: HTTP ${snapRes.status}`);
     }
 
-    const data = (await plRes.json()) as any;
+    const snapData = (await snapRes.json()) as any;
+    let qrString: string | null = null;
+
+    if (snapData.token) {
+      try {
+        const chargeRes = await fetch(`https://app.midtrans.com/snap/v2/transactions/${snapData.token}/charge`, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            payment_type: 'gopay',
+          }),
+        });
+
+        if (chargeRes.ok) {
+          const chargeData = (await chargeRes.json()) as any;
+          qrString =
+            typeof chargeData.qr_string === 'string' && chargeData.qr_string.trim()
+              ? chargeData.qr_string.trim()
+              : (chargeData.qr_payload || null);
+        }
+      } catch (chargeErr: any) {
+        logger.warn({ error: chargeErr.message, testOrderId }, 'Test Snap pre-charge fetch error');
+      }
+    }
 
     return {
       testOrderId,
       amount: 1000,
       status: 'PENDING',
-      paymentUrl: data.payment_url || null,
-      paymentLinkId: data.payment_link_id || data.id || null,
+      qrString,
       createdAt: new Date().toISOString(),
     };
   }
