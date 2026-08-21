@@ -212,6 +212,7 @@ dashboardTransactionsRouter.get('/:id', requireAuth, async (c) => {
         status: trx.status,
         customerName: trx.customerName,
         customerEmail: trx.customerEmail,
+        customerPhone: trx.customerPhone || null,
         metadata: sanitizedMetadata,
         qrisPayload: trx.qrisPayload,
         qrisUrl: publicQrUrl,

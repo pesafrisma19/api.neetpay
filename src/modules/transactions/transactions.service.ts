@@ -9,6 +9,7 @@ export interface CreateTransactionInput {
   paymentAccountId?: string;
   customerName?: string;
   customerEmail?: string;
+  customerPhone?: string;
   metadata?: Record<string, any>;
 }
 
@@ -216,6 +217,7 @@ export class TransactionService {
             totalAmount,
             customerName: input.customerName,
             customerEmail: input.customerEmail,
+            customerPhone: input.customerPhone,
           });
 
           checkoutUrl = hosted.paymentUrl;
@@ -299,6 +301,7 @@ export class TransactionService {
             expiredAt,
             customerName: input.customerName || null,
             customerEmail: input.customerEmail || null,
+            customerPhone: input.customerPhone || null,
             metadata: {
               ...(input.metadata || {}),
               provider: isDynamic ? 'GOBIZ_DYNAMIC' : 'GOBIZ',
@@ -361,6 +364,7 @@ export class TransactionService {
       checkout_url: publicCheckoutUrl,
       customer_name: result.customerName,
       customer_email: result.customerEmail,
+      customer_phone: result.customerPhone,
       metadata: sanitizedMetadata,
       expires_at: result.expiredAt,
       created_at: result.createdAt,
@@ -427,6 +431,7 @@ export class TransactionService {
       checkout_url: publicCheckoutUrl,
       customer_name: transaction.customerName,
       customer_email: transaction.customerEmail,
+      customer_phone: transaction.customerPhone,
       metadata: sanitizedMetadata,
       paid_at: transaction.paidAt,
       expires_at: transaction.expiredAt,

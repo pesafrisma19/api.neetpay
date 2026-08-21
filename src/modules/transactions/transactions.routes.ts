@@ -15,6 +15,7 @@ export const createTransactionSchema = z.object({
   paymentAccountId: z.string().optional(),
   customerName: z.string().max(100).optional(),
   customerEmail: z.string().email().optional(),
+  customerPhone: z.string().trim().max(25, 'customerPhone must not exceed 25 characters').optional(),
   metadata: z.record(z.any()).optional(),
 });
 

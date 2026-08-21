@@ -590,6 +590,12 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
             description: 'Optional customer email address',
             example: 'customer@example.com',
           },
+          customerPhone: {
+            type: 'string',
+            maxLength: 25,
+            description: 'Optional customer phone / WhatsApp number',
+            example: '6281234567890',
+          },
           metadata: {
             type: 'object',
             description: 'Optional custom JSON metadata object to attach to the transaction',
@@ -641,6 +647,7 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
           checkout_url: { type: 'string', nullable: true, description: 'NEETpay-hosted payment page URL', example: 'https://neetpay.web.id/pay/INV-2026-001' },
           customer_name: { type: 'string', nullable: true, example: 'John Doe' },
           customer_email: { type: 'string', nullable: true, example: 'customer@example.com' },
+          customer_phone: { type: 'string', nullable: true, description: 'Optional customer phone / WhatsApp number', example: '6281234567890' },
           metadata: { type: 'object', nullable: true },
           expires_at: { type: 'string', format: 'date-time', description: 'ISO 8601 expiry timestamp', example: '2026-08-18T10:05:00.000Z' },
           created_at: { type: 'string', format: 'date-time', example: '2026-08-18T10:00:00.000Z' },
@@ -668,6 +675,7 @@ function verifyWebhook(rawBody, signature, timestamp, secret) {
           checkout_url: { type: 'string', nullable: true, description: 'NEETpay-hosted payment page URL', example: 'https://neetpay.web.id/pay/INV-2026-001' },
           customer_name: { type: 'string', nullable: true, example: 'John Doe' },
           customer_email: { type: 'string', nullable: true, example: 'customer@example.com' },
+          customer_phone: { type: 'string', nullable: true, description: 'Optional customer phone / WhatsApp number', example: '6281234567890' },
           metadata: { type: 'object', nullable: true },
           paid_at: { type: 'string', format: 'date-time', nullable: true, example: '2026-08-18T10:02:15.000Z' },
           expires_at: { type: 'string', format: 'date-time', example: '2026-08-18T10:05:00.000Z' },

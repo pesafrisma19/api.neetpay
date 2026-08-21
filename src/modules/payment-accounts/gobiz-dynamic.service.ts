@@ -312,6 +312,7 @@ export class GoBizDynamicService {
       totalAmount: number;
       customerName?: string | null;
       customerEmail?: string | null;
+      customerPhone?: string | null;
     }
   ): Promise<{
     paymentUrl: string;
@@ -345,6 +346,9 @@ export class GoBizDynamicService {
     };
     if (params.customerEmail?.trim()) {
       customerDetails.email = params.customerEmail.trim();
+    }
+    if (params.customerPhone?.trim()) {
+      customerDetails.phone = params.customerPhone.trim();
     }
 
     logger.info(
