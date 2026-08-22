@@ -13,6 +13,7 @@ import { webhookRouter } from './modules/webhooks/webhook.routes.js';
 import { midtransInboundRouter } from './modules/webhooks/midtrans-inbound.routes.js';
 import { adminRouter } from './modules/admin/admin.routes.js';
 import { transactionsRouter, publicPayRouter } from './modules/transactions/transactions.routes.js';
+import { publicRouter } from './modules/public/public.routes.js';
 import { dashboardRouter } from './modules/dashboard/dashboard.routes.js';
 import { dashboardTransactionsRouter } from './modules/transactions/dashboard-transactions.routes.js';
 import { requireApiKey } from './middleware/api-key.middleware.js';
@@ -79,6 +80,7 @@ app.route('/api/admin', adminRouter);
 app.route('/v1/transactions', transactionsRouter);
 app.route('/v1/payment-channels', paymentChannelsRouter);
 app.route('/v1/pay', publicPayRouter);
+app.route('/v1/public', publicRouter);
 
 // Forward /api/me to authRouter /me
 app.get('/api/me', (c) => authRouter.fetch(new Request(`${new URL(c.req.url).origin}/me`, c.req.raw)));
